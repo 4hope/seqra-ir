@@ -20,8 +20,7 @@ data class PIRRegister(
 ) : PIRValue {
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitRegister(this)
     override fun toString(): String = name
-    override val errorKind: Int
-        get() = TODO("Not yet implemented")
+    override val errorKind: Int = ERR_NEVER
 }
 
 data class PIRInteger(
@@ -30,8 +29,7 @@ data class PIRInteger(
     override val line: Int = -1,
     override val isBorrowed: Boolean = false
 ) : PIRValue {
-    override val errorKind: Int
-        get() = TODO("Not yet implemented")
+    override val errorKind: Int = ERR_NEVER
 
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitInteger(this)
 }
@@ -42,8 +40,7 @@ data class PIRFloat(
     override val line: Int = -1,
     override val isBorrowed: Boolean = false
 ) : PIRValue {
-    override val errorKind: Int
-        get() = TODO("Not yet implemented")
+    override val errorKind: Int = ERR_NEVER
 
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitFloat(this)
 }
@@ -66,8 +63,7 @@ data class PIRCString(
     override fun hashCode(): Int =
         31 * value.contentHashCode() + type.hashCode()
 
-    override val errorKind: Int
-        get() = TODO("Not yet implemented")
+    override val errorKind: Int = ERR_NEVER
 }
 
 data class PIRUndef(
@@ -75,8 +71,7 @@ data class PIRUndef(
     override val line: Int = -1,
     override val isBorrowed: Boolean = false
 ) : PIRValue {
-    override val errorKind: Int
-        get() = TODO("Not yet implemented")
+    override val errorKind: Int = ERR_NEVER
 
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitUndef(this)
 }
@@ -88,8 +83,7 @@ data class PIRArgument(
     override val line: Int = -1,
     override val isBorrowed: Boolean = false
 ) : PIRValue, CommonArgument {
-    override val errorKind: Int
-        get() = TODO("Not yet implemented")
+    override val errorKind: Int = ERR_NEVER
 
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitArgument(this)
 }

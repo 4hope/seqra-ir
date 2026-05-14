@@ -1,6 +1,8 @@
+import argparse
 import json
 import grpc
 from concurrent import futures
+import os
 from pathlib import Path
 import logging
 import traceback
@@ -80,6 +82,27 @@ def safe_bytes(value):
         return pickle.dumps(value)
     except Exception:
         return b""
+
+
+def build_block_label_map(blocks) -> dict[int, int]:
+    return {id(block): index for index, block in enumerate(blocks)}
+
+
+def resolve_block_label(block_like, block_labels: dict[int, int], default=0) -> int:
+    if block_like is None:
+        return default
+
+    mapped = block_labels.get(id(block_like))
+    if mapped is not None:
+        return mapped
+
+    label = getattr(block_like, "label", None)
+    if label is not None:
+        mapped = block_labels.get(id(label))
+        if mapped is not None:
+            return mapped
+
+    return safe_int(block_like, default)
 
 
 def convert_error_kind(error_kind) -> int:
@@ -259,7 +282,12 @@ def convert_value(value) -> ir_pb2.Value:
         )
 
     elif isinstance(value, Op):
-        pass
+        value_proto.op.CopyFrom(
+            ir_pb2.Op(
+                name=safe_str(getattr(value, "__class__", None).__name__ if getattr(value, "__class__", None) else ""),
+                value=convert_op_metadata(value),
+            )
+        )
 
     return value_proto
 
@@ -355,7 +383,7 @@ def convert_func_signature(sig) -> ir_pb2.FuncSignature:
     return sig_proto
 
 
-def convert_op(op: Op) -> ir_pb2.Op:
+def convert_op(op: Op, block_labels: dict[int, int] | None = None) -> ir_pb2.Op:
     op_proto = ir_pb2.Op()
     try:
         op_proto.value.CopyFrom(convert_value(op))
@@ -397,7 +425,7 @@ def convert_op(op: Op) -> ir_pb2.Op:
         elif op_class_name == "Goto":
             control_op = ir_pb2.ControlOp()
             target = getattr(op, "label", None)
-            target_label = safe_int(target, 0)
+            target_label = resolve_block_label(target, block_labels or {}, 0)
             control_op.goto.CopyFrom(ir_pb2.Goto(label=target_label))
             op_proto.control_op.CopyFrom(control_op)
 
@@ -408,9 +436,13 @@ def convert_op(op: Op) -> ir_pb2.Op:
             if hasattr(op, "value") and op.value is not None:
                 branch.value.CopyFrom(convert_value(op.value))
             if hasattr(op, "true") and op.true is not None:
-                branch.true_label.CopyFrom(ir_pb2.BasicBlock(label=safe_int(op.true.label, 0)))
+                branch.true_label.CopyFrom(
+                    ir_pb2.BasicBlock(label=resolve_block_label(op.true, block_labels or {}, 0))
+                )
             if hasattr(op, "false") and op.false is not None:
-                branch.false_label.CopyFrom(ir_pb2.BasicBlock(label=safe_int(op.false.label, 0)))
+                branch.false_label.CopyFrom(
+                    ir_pb2.BasicBlock(label=resolve_block_label(op.false, block_labels or {}, 0))
+                )
 
             op_value = getattr(op, "op", None)
             if op_value == "is_error":
@@ -536,7 +568,9 @@ def convert_op(op: Op) -> ir_pb2.Op:
                 truncated_type = getattr(desc, "truncated_type", None)
                 if truncated_type is not None:
                     primitive_desc.truncated_type.CopyFrom(convert_rtype(truncated_type))
-                primitive_desc.ordering.extend(list(getattr(desc, "ordering", [])))
+                ordering = getattr(desc, "ordering", None)
+                if ordering:
+                    primitive_desc.ordering.extend(list(ordering))
                 primitive_op.desc.CopyFrom(primitive_desc)
 
             register_op.primitive_op.CopyFrom(primitive_op)
@@ -1063,18 +1097,23 @@ def convert_function(fn: FuncIR) -> ir_pb2.Function:
     if not decl.module_name:
         decl.module_name = safe_str(getattr(getattr(fn, "decl", None), "module_name", ""))
 
+    source_blocks = list(getattr(fn, "blocks", []))
+    block_labels = build_block_label_map(source_blocks)
+
     blocks = []
-    for block in getattr(fn, "blocks", []):
-        ops = [convert_op(op) for op in getattr(block, "ops", [])]
+    for block in source_blocks:
+        ops = [convert_op(op, block_labels) for op in getattr(block, "ops", [])]
 
         error_handler = None
         block_error_handler = getattr(block, "error_handler", None)
         if block_error_handler is not None:
-            error_handler = ir_pb2.BasicBlock(label=safe_int(getattr(block_error_handler, "label", 0), 0))
+            error_handler = ir_pb2.BasicBlock(
+                label=resolve_block_label(block_error_handler, block_labels, 0)
+            )
 
         blocks.append(
             ir_pb2.BasicBlock(
-                label=safe_int(getattr(block, "label", 0), 0),
+                label=resolve_block_label(block, block_labels, 0),
                 ops=ops,
                 error_handler=error_handler,
                 referenced=safe_bool(getattr(block, "referenced", False)),
@@ -1126,7 +1165,10 @@ def convert_cfg(fn: FuncIR, cfg) -> ir_pb2.FunctionCFG:
     logger.info(f"Function decl name: {getattr(getattr(fn, 'decl', None), 'name', 'No decl')}")
     logger.info(f"Number of blocks: {len(getattr(fn, 'blocks', []))}")
 
-    for i, block in enumerate(getattr(fn, "blocks", [])):
+    source_blocks = list(getattr(fn, "blocks", []))
+    block_labels = build_block_label_map(source_blocks)
+
+    for i, block in enumerate(source_blocks):
         logger.info(f"  Block {i}: label={getattr(block, 'label', -1)}, ops={len(getattr(block, 'ops', []))}")
         for j, op in enumerate(getattr(block, "ops", [])):
             logger.info(f"    Op {j}: type={type(op).__name__}, line={getattr(op, 'line', -1)}")
@@ -1136,15 +1178,15 @@ def convert_cfg(fn: FuncIR, cfg) -> ir_pb2.FunctionCFG:
     exits = []
     for block in getattr(cfg, "exits", []):
         logger.info(f"Exit block label: {getattr(block, 'label', -1)}")
-        exits.append(ir_pb2.BasicBlock(label=safe_int(getattr(block, "label", 0), 0)))
+        exits.append(ir_pb2.BasicBlock(label=resolve_block_label(block, block_labels, 0)))
     cfg_proto.exits.extend(exits)
 
     blocks = []
-    for block in getattr(fn, "blocks", []):
+    for block in source_blocks:
         ops = []
         for op in getattr(block, "ops", []):
             try:
-                op_proto = convert_op(op)
+                op_proto = convert_op(op, block_labels)
                 logger.info(f"Converting op: {type(op).__name__} at line {getattr(op, 'line', -1)}")
                 ops.append(op_proto)
             except Exception as e:
@@ -1155,13 +1197,13 @@ def convert_cfg(fn: FuncIR, cfg) -> ir_pb2.FunctionCFG:
         block_error_handler = getattr(block, "error_handler", None)
         if block_error_handler is not None:
             error_handler = ir_pb2.BasicBlock(
-                label=safe_int(getattr(block_error_handler, "label", 0), 0),
+                label=resolve_block_label(block_error_handler, block_labels, 0),
                 referenced=safe_bool(getattr(block_error_handler, "referenced", False)),
             )
 
         blocks.append(
             ir_pb2.BasicBlock(
-                label=safe_int(getattr(block, "label", 0), 0),
+                label=resolve_block_label(block, block_labels, 0),
                 ops=ops,
                 error_handler=error_handler,
                 referenced=safe_bool(getattr(block, "referenced", False)),
@@ -1181,12 +1223,12 @@ def convert_cfg(fn: FuncIR, cfg) -> ir_pb2.FunctionCFG:
             if not src_block or not dst_blocks:
                 continue
 
-            src_label = safe_int(getattr(src_block, "label", 0), 0)
+            src_label = resolve_block_label(src_block, block_labels, 0)
             for dst_block in dst_blocks:
                 if not dst_block:
                     continue
 
-                dst_label = safe_int(getattr(dst_block, "label", 0), 0)
+                dst_label = resolve_block_label(dst_block, block_labels, 0)
                 edges.append(
                     ir_pb2.CFGEdge(
                         source=src_label,
@@ -1359,15 +1401,31 @@ class IRService(ir_pb2_grpc.IRServiceServicer):
             )
 
 
-def serve():
-    logger.info("Starting gRPC server...")
+def serve(host: str = "127.0.0.1", port: int = 50051):
+    address = f"{host}:{port}"
+    logger.info("Starting gRPC server on %s...", address)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
     ir_pb2_grpc.add_IRServiceServicer_to_server(IRService(), server)
-    server.add_insecure_port("[::]:50051")
+    bound_port = server.add_insecure_port(address)
+    if bound_port == 0:
+        raise RuntimeError(f"Failed to bind gRPC server to {address}")
     server.start()
-    logger.info("IR gRPC server started on port 50051")
+    logger.info("IR gRPC server started on %s", address)
     server.wait_for_termination()
 
 
 if __name__ == "__main__":
-    serve()
+    parser = argparse.ArgumentParser(description="Serve mypy IR over gRPC")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("SEQRA_PY_GRPC_HOST", "127.0.0.1"),
+        help="Host address to bind the gRPC server to",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("SEQRA_PY_GRPC_PORT", "50051")),
+        help="TCP port for the gRPC server",
+    )
+    args = parser.parse_args()
+    serve(host=args.host, port=args.port)

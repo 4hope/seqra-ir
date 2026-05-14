@@ -1,6 +1,5 @@
 package org.seqra.ir.api.py.cfg
 
-import PIRInstVisitor
 import org.seqra.ir.api.py.PIRClass
 
 

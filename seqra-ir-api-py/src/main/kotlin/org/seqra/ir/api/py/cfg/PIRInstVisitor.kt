@@ -1,4 +1,4 @@
-import org.seqra.ir.api.py.cfg.*
+package org.seqra.ir.api.py.cfg
 
 interface PIRInstVisitor<T> {
     fun visitAssign(inst: PIRAssignInst): T

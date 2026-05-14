@@ -704,7 +704,11 @@ class ProtoToPirMapper {
                 isBorrowed = proto.isBorrowed
             )
 
-            ir.Value.ValueCase.OP -> resultRegisterOf(proto.op, proto.op.name.ifBlank { "nested_op" }, proto.line)
+            ir.Value.ValueCase.OP -> resultRegisterOf(
+                proto.op,
+                fallbackNameForOp(proto.op.name),
+                proto.line
+            )
 
             ir.Value.ValueCase.VALUE_NOT_SET,
             null -> PIRUndef(
@@ -1051,6 +1055,13 @@ class ProtoToPirMapper {
                 isArg = false
             )
         }
+    }
+
+    private fun fallbackNameForOp(name: String): String {
+        if (name.isBlank()) return "nested_op"
+        return name
+            .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+            .lowercase()
     }
 
     private fun shallowClass(proto: ir.Class): PIRClass {

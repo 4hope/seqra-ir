@@ -5,9 +5,7 @@ import org.seqra.ir.api.common.CommonMethodParameter
 import org.seqra.ir.api.common.CommonTypeName
 import org.seqra.ir.api.common.cfg.CommonInst
 import org.seqra.ir.api.common.cfg.ControlFlowGraph
-import org.seqra.ir.api.py.cfg.PIRBasicBlock
-import org.seqra.ir.api.py.cfg.PIRInst
-import org.seqra.ir.api.py.cfg.PIRRegister
+import org.seqra.ir.api.py.cfg.*
 
 const val PIR_FUNC_NORMAL = 0
 const val PIR_FUNC_STATICMETHOD = 1
@@ -65,7 +63,37 @@ data class PIRFunc(
     override val returnType: CommonTypeName get() = decl.sig.retType
 
     override fun flowGraph(): ControlFlowGraph<CommonInst> {
-        TODO("PIR flowGraph is not implemented yet")
+        val insts = instructions
+        val instByIndex = insts.associateBy { it.location.index }
+        val successors = insts.associateWith { inst ->
+            when (inst) {
+                is PIRGotoInst -> setOfNotNull(instByIndex[inst.target.index])
+                is PIRIfInst -> setOfNotNull(
+                    instByIndex[inst.trueBranch.index],
+                    instByIndex[inst.falseBranch.index]
+                )
+                is PIRReturnInst, is PIRUnreachableInst -> emptySet()
+                else -> instByIndex[inst.location.index + 1]?.let(::setOf) ?: emptySet()
+            }
+        }
+        val predecessors = insts.associateWith { target ->
+            insts.filterTo(linkedSetOf()) { candidate ->
+                successors[candidate].orEmpty().contains(target)
+            }
+        }
+
+        return object : ControlFlowGraph<CommonInst> {
+            override val instructions: List<CommonInst> = insts
+            override val entries: List<CommonInst> = insts.firstOrNull()?.let(::listOf) ?: emptyList()
+            override val exits: List<CommonInst> =
+                insts.filterTo(mutableListOf()) { successors[it].isNullOrEmpty() }
+
+            override fun successors(node: CommonInst): Set<CommonInst> =
+                successors[node as? PIRInst].orEmpty()
+
+            override fun predecessors(node: CommonInst): Set<CommonInst> =
+                predecessors[node as? PIRInst].orEmpty()
+        }
     }
 
     val line: Int? get() = decl.line

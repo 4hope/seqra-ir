@@ -4,14 +4,39 @@ import org.seqra.ir.api.py.*
 import org.seqra.ir.api.py.cfg.*
 import java.io.File
 
-class PIRToPythonEmitter {
+enum class EmitMode {
+    DEBUG_IR,
+    FUZZ;
+
+    val cliName: String
+        get() = name.lowercase().replace('_', '-')
+
+    companion object {
+        fun fromCli(value: String): EmitMode =
+            entries.firstOrNull { it.cliName == value.lowercase() }
+                ?: error("Unsupported emit mode: $value")
+    }
+}
+
+data class EmitOptions(
+    val mode: EmitMode = EmitMode.FUZZ,
+    val failOnUnsupported: Boolean = true
+)
+
+class PIRToPythonEmitter(
+    private val options: EmitOptions = EmitOptions()
+) {
+    private var currentModule: PIRModule? = null
 
     fun emitModule(module: PIRModule): String {
+        currentModule = module
         val out = StringBuilder()
 
         out.appendLine("from __future__ import annotations")
+        out.appendLine("# emitter mode: ${options.mode.cliName}")
         out.appendLine()
         emitRuntimeHelpers(out)
+        emitModuleImports(module, out)
 
         val topLevelFunctions = module.functions.filter { it.decl.className == null }
 
@@ -25,6 +50,8 @@ class PIRToPythonEmitter {
             out.appendLine()
         }
 
+        emitTopLevelInit(out)
+
         return out.toString()
     }
 
@@ -33,12 +60,47 @@ class PIRToPythonEmitter {
     }
 
     private fun emitRuntimeHelpers(out: StringBuilder) {
+        out.appendLine("__PIR_ERROR = object()")
+        out.appendLine()
+
+        out.appendLine("import importlib as __pir_importlib")
+        out.appendLine()
+
         out.appendLine("def __pir_is_error(x):")
-        out.appendLine("    return x is None")
+        out.appendLine("    return x is __PIR_ERROR")
         out.appendLine()
 
         out.appendLine("def __pir_call_c(name, *args):")
-        out.appendLine("    # runtime stub for low-level C call")
+        out.appendLine("    if name == \"PyImport_Import\" and args:")
+        out.appendLine("        return __pir_import_module(str(args[0]))")
+        out.appendLine("    if name == \"CPyImport_ImportNative\":")
+        out.appendLine("        module_name = __pir_guess_module_name(args)")
+        out.appendLine("        if module_name is not None:")
+        out.appendLine("            return __pir_import_module(module_name + \"_generated\", module_name)")
+        out.appendLine("        return None")
+        out.appendLine("    if name == \"CPyImport_GetNativeAttrs\":")
+        out.appendLine("        return None")
+        out.appendLine("    return None")
+        out.appendLine()
+
+        out.appendLine("def __pir_import_module(primary, fallback=None):")
+        out.appendLine("    try:")
+        out.appendLine("        return __pir_importlib.import_module(primary)")
+        out.appendLine("    except ImportError:")
+        out.appendLine("        if fallback is None:")
+        out.appendLine("            return None")
+        out.appendLine("        try:")
+        out.appendLine("            return __pir_importlib.import_module(fallback)")
+        out.appendLine("        except ImportError:")
+        out.appendLine("            return None")
+        out.appendLine()
+
+        out.appendLine("def __pir_guess_module_name(args):")
+        out.appendLine("    for arg in reversed(args):")
+        out.appendLine("        if isinstance(arg, str) and arg and not arg.startswith('.'):")
+        out.appendLine("            parts = arg.split('.')")
+        out.appendLine("            if all(part.isidentifier() for part in parts):")
+        out.appendLine("                return arg")
         out.appendLine("    return None")
         out.appendLine()
 
@@ -84,6 +146,44 @@ class PIRToPythonEmitter {
         out.appendLine()
     }
 
+    private fun emitModuleImports(module: PIRModule, out: StringBuilder) {
+        module.imports.distinct().sorted().forEach { importName ->
+            when (importName) {
+                "builtins" -> out.appendLine("import builtins")
+                else -> {
+                    val alias = pySafeName(importName.substringAfterLast('.'))
+                    val generatedName = generatedModuleImportName(importName)
+                    out.appendLine("$alias = __pir_import_module(${quote(generatedName)}, ${quote(importName)})")
+                }
+            }
+        }
+
+        collectExternalFunctionBindings(module).forEach { (alias, qualifiedName) ->
+            val moduleAlias = qualifiedName.substringBefore('.')
+            val attrName = qualifiedName.substringAfter('.', "")
+            out.appendLine("if $moduleAlias is not None and hasattr($moduleAlias, ${quote(attrName)}):")
+            out.appendLine("    $alias = $qualifiedName")
+        }
+
+        if (module.imports.isNotEmpty() || collectExternalFunctionBindings(module).isNotEmpty()) {
+            out.appendLine()
+        }
+    }
+
+    private fun emitTopLevelInit(out: StringBuilder) {
+        out.appendLine("__pir_module_initialized = False")
+        out.appendLine()
+        out.appendLine("def __pir_init_module():")
+        out.appendLine("    global __pir_module_initialized")
+        out.appendLine("    if __pir_module_initialized:")
+        out.appendLine("        return")
+        out.appendLine("    __pir_module_initialized = True")
+        out.appendLine("    if \"__top_level__\" in globals():")
+        out.appendLine("        __top_level__()")
+        out.appendLine()
+        out.appendLine("__pir_init_module()")
+    }
+
     private fun emitClass(cls: PIRClass, out: StringBuilder) {
         val base = cls.base?.name?.takeIf { it.isNotBlank() } ?: "object"
         out.appendLine("class ${pySafeName(cls.name)}($base):")
@@ -118,6 +218,13 @@ class PIRToPythonEmitter {
         if (fn.instructions.isEmpty() || fn.blocks.isEmpty()) {
             out.appendLine("${inner}return None")
             return
+        }
+
+        if (fn.decl.name == "__top_level__") {
+            val globals = collectTopLevelGlobals()
+            if (globals.isNotEmpty()) {
+                out.appendLine("${inner}global ${globals.joinToString(", ")}")
+            }
         }
 
         val entryPc = fn.blocks.first().start.index
@@ -266,8 +373,18 @@ class PIRToPythonEmitter {
 
     private fun emitCallC(expr: PIRCallCExpr): String {
         val args = expr.args.map(::emitValue)
+        val taggedArgs = expr.args.map(::emitTaggedValue)
 
         return when (expr.functionName) {
+            "CPyTagged_Add" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} + ${taggedArgs[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+
+            "CPyTagged_Subtract" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} - ${taggedArgs[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+
+            "CPyTagged_Multiply" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} * ${taggedArgs[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+
             "PyNumber_Add" ->
                 if (args.size == 2) "(${args[0]} + ${args[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
@@ -282,6 +399,33 @@ class PIRToPythonEmitter {
 
             else ->
                 "__pir_call_c(${quote(expr.functionName)}${if (args.isNotEmpty()) ", ${args.joinToString(", ")}" else ""})"
+        }
+    }
+
+    private fun emitPrimitive(expr: PIRPrimitiveCallExpr): String {
+        val args = expr.args.joinToString(", ") { emitValue(it) }
+        val taggedArgs = expr.args.map(::emitTaggedValue)
+
+        return when (expr.primitive.name) {
+            "int_eq" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} == ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+
+            "int_ne" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} != ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+
+            "int_lt" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} < ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+
+            "int_le" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} <= ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+
+            "int_gt" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} > ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+
+            "int_ge" ->
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} >= ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+
+            else -> "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
         }
     }
 
@@ -303,14 +447,11 @@ class PIRToPythonEmitter {
                 "$obj.${pySafeName(expr.method)}($args)"
             }
 
-            is PIRPrimitiveCallExpr -> {
-                val args = expr.args.joinToString(", ") { emitValue(it) }
-                "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
-            }
+            is PIRPrimitiveCallExpr -> emitPrimitive(expr)
 
             is PIRCallCExpr -> emitCallC(expr)
 
-            is PIRLoadErrorValueExpr -> "None"
+            is PIRLoadErrorValueExpr -> "__PIR_ERROR"
 
             is PIRGetAttrExpr -> "${emitValue(expr.obj)}.${pySafeName(expr.attr)}"
 
@@ -406,6 +547,19 @@ class PIRToPythonEmitter {
         }
     }
 
+    private fun emitTaggedValue(value: PIRValue): String {
+        return when (value) {
+            is PIRInteger -> {
+                if (value.value % 2 == 0) {
+                    (value.value / 2).toString()
+                } else {
+                    value.value.toString()
+                }
+            }
+            else -> emitValue(value)
+        }
+    }
+
     private fun emitLoadAddressTarget(target: Any): String {
         return when (target) {
             is String -> quote(target)
@@ -418,9 +572,47 @@ class PIRToPythonEmitter {
     private fun emitCallableName(decl: PIRFuncDecl): String {
         return if (decl.className != null) {
             "${pySafeName(decl.className)}.${pySafeName(decl.name)}"
+        } else if (decl.moduleName.isNotBlank() && decl.moduleName != currentModule?.fullname) {
+            "${pySafeName(decl.moduleName.substringAfterLast('.'))}.${pySafeName(decl.name)}"
         } else {
             pySafeName(decl.name)
         }
+    }
+
+    private fun collectTopLevelGlobals(): List<String> {
+        val module = currentModule ?: return emptyList()
+        val importGlobals = module.imports.map { pySafeName(it.substringAfterLast('.')) }
+        val boundFunctions = collectExternalFunctionBindings(module).map { it.first }
+        return (importGlobals + boundFunctions).distinct().sorted()
+    }
+
+    private fun collectExternalFunctionBindings(module: PIRModule): List<Pair<String, String>> {
+        val bindings = linkedMapOf<String, String>()
+        val collisions = mutableSetOf<String>()
+
+        module.functions.forEach { fn ->
+            fn.instructions.forEach { inst ->
+                val expr = (inst as? PIRAssignInst)?.rhv ?: return@forEach
+                if (expr is PIRDirectCallExpr &&
+                    expr.funcDecl.className == null &&
+                    expr.funcDecl.moduleName.isNotBlank() &&
+                    expr.funcDecl.moduleName != module.fullname
+                ) {
+                    val alias = pySafeName(expr.funcDecl.name)
+                    val moduleAlias = pySafeName(expr.funcDecl.moduleName.substringAfterLast('.'))
+                    val qualified = "$moduleAlias.${pySafeName(expr.funcDecl.name)}"
+                    val previous = bindings[alias]
+                    if (previous == null) {
+                        bindings[alias] = qualified
+                    } else if (previous != qualified) {
+                        collisions += alias
+                    }
+                }
+            }
+        }
+
+        collisions.forEach(bindings::remove)
+        return bindings.entries.map { it.toPair() }
     }
 
     private fun emitLiteral(value: Any?): String {
@@ -451,6 +643,12 @@ class PIRToPythonEmitter {
     }
 
     private fun pySafeName(name: String): String = pyName(name)
+
+    private fun generatedModuleImportName(name: String): String {
+        val parts = name.split('.').filter { it.isNotBlank() }
+        if (parts.isEmpty()) return name
+        return parts.dropLast(1).plus(parts.last() + "_generated").joinToString(".")
+    }
 
     private fun quote(s: String): String {
         return "\"" + s

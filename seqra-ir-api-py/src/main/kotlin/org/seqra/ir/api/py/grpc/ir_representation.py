@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import List
 
 from google.protobuf.json_format import MessageToDict
@@ -8,11 +10,7 @@ from mypyc.ir.class_ir import ClassIR
 
 from mypy import build
 from mypy.errors import CompileError
-from mypy.nodes import Expression, MypyFile
 from mypy.options import Options
-from mypy.test.config import test_temp_dir
-from mypy.types import Type
-from mypyc.analysis.ircheck import assert_func_ir_valid
 from mypyc.errors import Errors
 from mypyc.ir.module_ir import ModuleIR
 from mypyc.irbuild.main import build_ir
@@ -20,7 +18,7 @@ from mypyc.irbuild.mapper import Mapper
 from mypyc.options import CompilerOptions
 from mypyc.common import TOP_LEVEL_NAME
 from mypyc.transform import exceptions
-from mypyc.ir.pprint import format_func, generate_names_for_ir
+from mypyc.ir.pprint import format_func
 import io
 from contextlib import redirect_stdout
 
@@ -53,30 +51,47 @@ def print_ir_func(modules: List[ModuleIR]):
             f.write(output_str)
 
 
-def get_modules(files: List[str] = None, dir: str = None) -> List[ModuleIR]:
-    source_files = []
+def _collect_source_files(files: List[str] = None, dir: str = None) -> List[Path]:
     if files:
-        source_files = files
-    elif dir:
+        return [Path(file).resolve() for file in files]
+
+    if dir:
         directory = Path(dir).resolve()
+        exclude_patterns = {'__pycache__', '.git', 'venv', 'env', '.idea', '.vscode'}
+        return sorted(
+            file.resolve()
+            for file in directory.rglob("*.py")
+            if not any(pattern in file.parts for pattern in exclude_patterns)
+        )
 
-        python_files = list(directory.rglob("*.py"))
+    return []
 
-        exclude_patterns = ['__pycache__', '.git', 'venv', 'env', '.idea', '.vscode']
-        filtered_files = []
 
-        for file in python_files:
-            if not any(pattern in str(file) for pattern in exclude_patterns):
-                filtered_files.append(str(file.resolve()))
+def _module_info(source_file: Path) -> tuple[str, str]:
+    current = source_file.parent
+    package_parts = []
 
-        source_files = filtered_files
+    while (current / "__init__.py").exists():
+        package_parts.insert(0, current.name)
+        current = current.parent
+
+    if source_file.name == "__init__.py":
+        module_name = ".".join(package_parts) or source_file.parent.name
+    else:
+        module_name = ".".join(package_parts + [source_file.stem])
+
+    return module_name, str(current)
+
+
+def get_modules(files: List[str] = None, dir: str = None) -> List[ModuleIR]:
+    source_files = _collect_source_files(files, dir)
 
     sources = []
-    for i, source_file in enumerate(source_files):
-        with open(source_file, 'r') as f:
-            program_text = f.read()
-        module_name = "__main__" if i == 0 else f"__main__{i}"
-        source = build.BuildSource(module_name, module_name, program_text)
+    search_roots = set()
+    for source_file in source_files:
+        module_name, search_root = _module_info(source_file)
+        search_roots.add(search_root)
+        source = build.BuildSource(str(source_file), module_name, None)
         sources.append(source)
 
     compiler_options = CompilerOptions(capi_version=(3, 9))
@@ -84,7 +99,7 @@ def get_modules(files: List[str] = None, dir: str = None) -> List[ModuleIR]:
     options = Options()
     options.show_traceback = True
     options.hide_error_codes = True
-    options.use_builtins_fixtures = True
+    options.use_builtins_fixtures = False
     options.strict_optional = True
     options.python_version = compiler_options.python_version or (3, 9)
     options.export_types = True
@@ -93,14 +108,18 @@ def get_modules(files: List[str] = None, dir: str = None) -> List[ModuleIR]:
     options.strict_bytes = True
     options.disable_bytearray_promotion = True
     options.disable_memoryview_promotion = True
+    options.incremental = False
+    options.sqlite_cache = False
+    options.cache_dir = tempfile.mkdtemp(prefix="seqra-ir-mypy-cache-")
+    options.mypy_path = sorted(search_roots)
 
     per_module_options = {}
-    for i in range(len(source_files)):
-        module_name = "__main__" if i == 0 else f"__main__{i}"
+    for source_file in source_files:
+        module_name, _ = _module_info(source_file)
         per_module_options[module_name] = {"mypyc": True}
     options.per_module_options = per_module_options
 
-    result = build.build(sources=sources, options=options, alt_lib_path=test_temp_dir)
+    result = build.build(sources=sources, options=options)
     if result.errors:
         raise CompileError(result.errors)
 
@@ -186,6 +205,6 @@ def get_cfg(files: List[str] = None, dir: str = None):
 
 
 if __name__ == "__main__":
-    # get_modules(["C:/MKN/project2/solution.py", "C:/MKN/project2/anysystem.py"])
-    # get_classes(["C:/MKN/project2/solution.py", "C:/MKN/project2/anysystem.py"])
-    get_cfg(["/mnt/c/MKN/project2/test.py"])
+    sample = os.getenv("SEQRA_PY_SAMPLE")
+    if sample:
+        get_cfg([sample])
