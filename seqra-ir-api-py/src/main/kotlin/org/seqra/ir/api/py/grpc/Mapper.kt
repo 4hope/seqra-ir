@@ -4,13 +4,21 @@ import ir.*
 import ir.Function
 import org.seqra.ir.api.py.*
 import org.seqra.ir.api.py.cfg.*
-import java.util.*
+import java.util.IdentityHashMap
 
 class ProtoToPirMapper {
+
+    private data class LocalFunctionInfo(
+        val enclosingFunction: String? = null,
+        val isLocal: Boolean = false,
+        val isLambda: Boolean = false
+    )
 
     private val shallowClassCache = mutableMapOf<String, PIRClass>()
     private val moduleOwnerCache = mutableMapOf<String, PIRClass>()
     private val syntheticResultCache = IdentityHashMap<Op, PIRRegister>()
+    private val syntheticResultAliasCache = mutableMapOf<String, MutableList<PIRRegister>>()
+    private var nextSyntheticResultId = 0
 
     fun mapComplete(response: CompleteResponse): List<PIRModule> {
         return response.modules.modulesList.map(::mapModule)
@@ -29,7 +37,7 @@ class ProtoToPirMapper {
             classes = classes,
             finalNames = proto.finalNamesList.map { it.name to mapType(it.type) },
             typeVarNames = proto.typeVarNamesList,
-            dependencies = proto.dependenciesList.map(::mapDependency).toSet()
+            dependencies = proto.dependenciesList.mapNotNull(::mapDependency).toSet()
         )
     }
 
@@ -43,7 +51,7 @@ class ProtoToPirMapper {
             isGenerated = proto.isGenerated,
             isAbstract = proto.isAbstract,
             isExtClass = proto.isExtClass,
-            isFinalClass = false,
+            isFinalClass = proto.isFinalClass,
             isAugmented = proto.isAugmented,
             inheritsPython = proto.inheritsPython,
             hasDict = proto.hasDict,
@@ -70,6 +78,7 @@ class ProtoToPirMapper {
             mro = proto.mroList.map(::shallowClass),
             baseMro = proto.baseMroList.map(::shallowClass),
             children = proto.childrenList.map(::shallowClass),
+            childrenKnown = if (proto.hasChildrenKnown()) proto.childrenKnown else true,
             attrsWithDefaults = proto.attrsWithDefaultsList.toSet(),
             alwaysInitializedAttrs = proto.alwaysInitializedAttrsList.toSet(),
             sometimesInitializedAttrs = proto.sometimesInitializedAttrsList.toSet(),
@@ -77,6 +86,7 @@ class ProtoToPirMapper {
             bitmapAttrs = proto.bitmapAttrsList,
             envUserFunction = if (proto.hasEnvUserFunction()) mapFunction(proto.envUserFunction, ownerRef) else null,
             reuseFreedInstance = proto.reuseFreedInstance,
+            isAcyclic = proto.isAcyclic,
             isEnum = proto.isEnum,
             coroutineName = proto.coroutineName.takeIf { it.isNotBlank() }
         )
@@ -84,12 +94,11 @@ class ProtoToPirMapper {
 
     fun mapFunction(proto: Function, owner: PIRClass? = null): PIRFunc {
         val resolvedOwner = owner ?: syntheticModuleOwner(proto.decl.moduleName)
-        val decl = mapFuncDecl(proto.decl, proto.argRegsList)
+        val decl = mapFuncDecl(proto.decl, proto.argRegsList, proto.tracebackName.takeIf { it.isNotBlank() })
         val argRegs = proto.argRegsList.map(::mapRegister)
-
-        require(proto.blocksCount > 0) {
-            "Function ${decl.fullname} has no basic blocks; this mapper assumes non-empty block lists"
-        }
+        syntheticResultCache.clear()
+        syntheticResultAliasCache.clear()
+        nextSyntheticResultId = 0
 
         val blockRanges = computeBlockRanges(proto.blocksList)
 
@@ -118,7 +127,12 @@ class ProtoToPirMapper {
             val range = blockRanges.getValue(block.label)
             PIRBasicBlock(
                 start = PIRInstRef(range.first, instructions.getOrNull(range.first)),
-                end = PIRInstRef(range.last, instructions.getOrNull(range.last))
+                end = PIRInstRef(range.last, instructions.getOrNull(range.last)),
+                errorHandler = if (block.hasErrorHandler()) {
+                    blockRanges[block.errorHandler.label]?.first?.let { handlerIndex ->
+                        PIRInstRef(handlerIndex, instructions.getOrNull(handlerIndex))
+                    }
+                } else null
             )
         }
 
@@ -156,7 +170,7 @@ class ProtoToPirMapper {
             Op.OpCase.CONTROL_OP -> mapControlOp(op.controlOp, location, blockRanges, instructionsProvider)
             Op.OpCase.REGISTER_OP -> mapRegisterOp(op, op.registerOp, location)
             Op.OpCase.OP_NOT_SET,
-            null -> error("Unsupported empty op at index $index")
+            null -> noOpInst(location)
         }
     }
 
@@ -187,9 +201,12 @@ class ProtoToPirMapper {
                 )
             )
 
-            null -> error("BaseAssign is empty")
-
-            BaseAssign.BaseAssingCase.BASEASSING_NOT_SET -> TODO()
+            null,
+            BaseAssign.BaseAssingCase.BASEASSING_NOT_SET -> assignExpr(
+                location = location,
+                result = dest,
+                expr = undefinedExpr(dest.type, location.line, dest.isBorrowed)
+            )
         }
     }
 
@@ -256,8 +273,8 @@ class ProtoToPirMapper {
 
             ControlOp.ControlOpCase.UNREACHABLE -> PIRUnreachableInst(location)
 
-            null -> error("ControlOp is empty")
-            ControlOp.ControlOpCase.CONTROLOP_NOT_SET -> TODO()
+            null,
+            ControlOp.ControlOpCase.CONTROLOP_NOT_SET -> noOpInst(location)
         }
     }
 
@@ -286,70 +303,58 @@ class ProtoToPirMapper {
                 )
             )
 
-            RegisterOp.RegisterOpCase.CALL -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "call", location.line),
-                expr = PIRDirectCallExpr(
+            RegisterOp.RegisterOpCase.CALL -> assignRegisterOp(op, "call", location) {
+                PIRDirectCallExpr(
                     funcDecl = mapFuncDecl(proto.call.fn, emptyList()),
-                    args = proto.call.argsList.map(::mapValue),
+                    args = mapValues(proto.call.argsList),
                     type = mapType(proto.call.type),
                     line = location.line,
                     errorKind = errorKind
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.METHOD_CALL -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "method_call", location.line),
-                expr = PIRMethodCallExpr(
+            RegisterOp.RegisterOpCase.METHOD_CALL -> assignRegisterOp(op, "method_call", location) {
+                PIRMethodCallExpr(
                     obj = mapValue(proto.methodCall.obj),
                     method = proto.methodCall.method,
-                    args = proto.methodCall.argsList.map(::mapValue),
+                    args = mapValues(proto.methodCall.argsList),
                     receiverType = mapType(proto.methodCall.receiverType),
                     type = mapType(proto.methodCall.type),
                     line = location.line,
                     errorKind = errorKind
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.PRIMITIVE_OP -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "primitive_op", location.line),
-                expr = PIRPrimitiveCallExpr(
+            RegisterOp.RegisterOpCase.PRIMITIVE_OP -> assignRegisterOp(op, "primitive_op", location) {
+                PIRPrimitiveCallExpr(
                     primitive = mapPrimitiveDescription(proto.primitiveOp.desc),
-                    args = proto.primitiveOp.argsList.map(::mapValue),
+                    args = mapValues(proto.primitiveOp.argsList),
                     type = mapType(proto.primitiveOp.type),
                     line = location.line,
                     errorKind = errorKind
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.LOAD_ERROR_VALUE -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "load_error_value", location.line),
-                expr = PIRLoadErrorValueExpr(
+            RegisterOp.RegisterOpCase.LOAD_ERROR_VALUE -> assignRegisterOp(op, "load_error_value", location) {
+                PIRLoadErrorValueExpr(
                     undefines = proto.loadErrorValue.undefines,
                     type = mapType(proto.loadErrorValue.type),
                     line = location.line,
                     isBorrowed = proto.loadErrorValue.isBorrowed,
                     errorKind = errorKind
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.LOAD_LITERAL -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "load_literal", location.line),
-                expr = PIRLiteralExpr(
+            RegisterOp.RegisterOpCase.LOAD_LITERAL -> assignRegisterOp(op, "load_literal", location) {
+                PIRLiteralExpr(
                     literal = mapLiteralValue(proto.loadLiteral.value, mapType(proto.loadLiteral.type)),
                     type = mapType(proto.loadLiteral.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.GET_ATTR -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "get_attr", location.line),
-                expr = PIRGetAttrExpr(
+            RegisterOp.RegisterOpCase.GET_ATTR -> assignRegisterOp(op, "get_attr", location) {
+                PIRGetAttrExpr(
                     obj = mapValue(proto.getAttr.obj),
                     attr = proto.getAttr.attr,
                     classType = mapType(proto.getAttr.classType),
@@ -359,7 +364,7 @@ class ProtoToPirMapper {
                     isBorrowed = proto.getAttr.isBorrowed,
                     errorKind = errorKind
                 )
-            )
+            }
 
             RegisterOp.RegisterOpCase.SET_ATTR -> PIREffectInst(
                 location,
@@ -375,10 +380,8 @@ class ProtoToPirMapper {
                 )
             )
 
-            RegisterOp.RegisterOpCase.LOAD_STATIC -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "load_static", location.line),
-                expr = PIRLoadStaticExpr(
+            RegisterOp.RegisterOpCase.LOAD_STATIC -> assignRegisterOp(op, "load_static", location) {
+                PIRLoadStaticExpr(
                     identifier = proto.loadStatic.identifier,
                     moduleName = proto.loadStatic.moduleName.takeIf { it.isNotBlank() },
                     namespace = proto.loadStatic.namespace.ifBlank { NAMESPACE_STATIC },
@@ -386,7 +389,7 @@ class ProtoToPirMapper {
                     type = mapType(proto.loadStatic.type),
                     line = location.line
                 )
-            )
+            }
 
             RegisterOp.RegisterOpCase.INIT_STATIC -> PIREffectInst(
                 location,
@@ -399,32 +402,26 @@ class ProtoToPirMapper {
                 )
             )
 
-            RegisterOp.RegisterOpCase.TUPLE_SET -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "tuple_set", location.line),
-                expr = PIRTupleExpr(
-                    items = proto.tupleSet.itemsList.map(::mapValue),
+            RegisterOp.RegisterOpCase.TUPLE_SET -> assignRegisterOp(op, "tuple_set", location) {
+                PIRTupleExpr(
+                    items = mapValues(proto.tupleSet.itemsList),
                     type = mapType(proto.tupleSet.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.TUPLE_GET -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "tuple_get", location.line),
-                expr = PIRTupleGetExpr(
+            RegisterOp.RegisterOpCase.TUPLE_GET -> assignRegisterOp(op, "tuple_get", location) {
+                PIRTupleGetExpr(
                     tuple = mapValue(proto.tupleGet.src),
                     index = proto.tupleGet.index,
                     type = mapType(proto.tupleGet.type),
                     line = location.line,
                     isBorrowed = proto.tupleGet.isBorrowed
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.CAST -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "cast", location.line),
-                expr = PIRCastExpr(
+            RegisterOp.RegisterOpCase.CAST -> assignRegisterOp(op, "cast", location) {
+                PIRCastExpr(
                     operand = mapValue(proto.cast.src),
                     unchecked = proto.cast.isUnchecked,
                     type = mapType(proto.cast.type),
@@ -432,29 +429,25 @@ class ProtoToPirMapper {
                     isBorrowed = proto.cast.isBorrowed,
                     errorKind = errorKind
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.BOX -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "box", location.line),
-                expr = PIRBoxExpr(
+            RegisterOp.RegisterOpCase.BOX -> assignRegisterOp(op, "box", location) {
+                PIRBoxExpr(
                     operand = mapValue(proto.box.src),
                     type = mapType(proto.box.type),
                     line = location.line,
                     isBorrowed = proto.box.isBorrowed
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.UNBOX -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "unbox", location.line),
-                expr = PIRUnboxExpr(
+            RegisterOp.RegisterOpCase.UNBOX -> assignRegisterOp(op, "unbox", location) {
+                PIRUnboxExpr(
                     operand = mapValue(proto.unbox.src),
                     type = mapType(proto.unbox.type),
                     line = location.line,
                     errorKind = errorKind
                 )
-            )
+            }
 
             RegisterOp.RegisterOpCase.RAISE_STANDARD_ERROR -> PIREffectInst(
                 location,
@@ -472,137 +465,126 @@ class ProtoToPirMapper {
                 )
             )
 
-            RegisterOp.RegisterOpCase.CALL_C -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "call_c", location.line),
-                expr = PIRCallCExpr(
+            RegisterOp.RegisterOpCase.CALL_C -> assignRegisterOp(op, "call_c", location) {
+                PIRCallCExpr(
                     functionName = proto.callC.functionName,
-                    args = proto.callC.argsList.map(::mapValue),
+                    args = mapValues(proto.callC.argsList),
                     steals = mapSteals(proto.callC.steals),
                     varArgIdx = proto.callC.varArgIdx,
                     isPure = proto.callC.isPure,
                     returnsNull = proto.callC.returnsNull,
-                    dependencies = proto.callC.dependenciesList.map(::mapDependency),
+                    dependencies = proto.callC.dependenciesList.mapNotNull(::mapDependency),
                     type = mapType(proto.callC.type),
                     line = location.line,
                     isBorrowed = proto.callC.isBorrowed,
                     errorKind = errorKind
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.TRUNCATE -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "truncate", location.line),
-                expr = PIRCastExpr(
+            RegisterOp.RegisterOpCase.TRUNCATE -> assignRegisterOp(op, "truncate", location) {
+                PIRCastExpr(
                     operand = mapValue(proto.truncate.src),
                     unchecked = false,
                     type = mapType(proto.truncate.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.EXTEND -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "extend", location.line),
-                expr = PIRCastExpr(
+            RegisterOp.RegisterOpCase.EXTEND -> assignRegisterOp(op, "extend", location) {
+                PIRCastExpr(
                     operand = mapValue(proto.extend.src),
                     unchecked = false,
                     type = mapType(proto.extend.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.LOAD_GLOBAL -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "load_global", location.line),
-                expr = PIRLoadGlobalExpr(
+            RegisterOp.RegisterOpCase.LOAD_GLOBAL -> assignRegisterOp(op, "load_global", location) {
+                PIRLoadGlobalExpr(
                     identifier = proto.loadGlobal.identifier,
                     ann = proto.loadGlobal.ann,
                     type = mapType(proto.loadGlobal.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.INT_OP -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "int_op", location.line),
-                expr = PIRIntBinExpr(
+            RegisterOp.RegisterOpCase.INT_OP -> assignRegisterOp(op, "int_op", location) {
+                PIRIntBinExpr(
                     lhs = mapValue(proto.intOp.lhs),
                     rhs = mapValue(proto.intOp.rhs),
                     op = mapIntOpKind(proto.intOp.op),
                     type = mapType(proto.intOp.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.COMPARISON_OP -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "comparison_op", location.line),
-                expr = PIRCmpExpr(
+            RegisterOp.RegisterOpCase.COMPARISON_OP -> assignRegisterOp(op, "comparison_op", location) {
+                PIRCmpExpr(
                     lhs = mapValue(proto.comparisonOp.lhs),
                     rhs = mapValue(proto.comparisonOp.rhs),
                     op = mapCmpKind(proto.comparisonOp.op),
                     type = mapType(proto.comparisonOp.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.FLOAT_OP -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "float_op", location.line),
-                expr = PIRFloatBinExpr(
+            RegisterOp.RegisterOpCase.FLOAT_OP -> assignRegisterOp(op, "float_op", location) {
+                PIRFloatBinExpr(
                     lhs = mapValue(proto.floatOp.lhs),
                     rhs = mapValue(proto.floatOp.rhs),
                     op = mapFloatOpKind(proto.floatOp.op),
                     type = mapType(proto.floatOp.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.FLOAT_NEG -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "float_neg", location.line),
-                expr = PIRFloatNegExpr(
+            RegisterOp.RegisterOpCase.FLOAT_NEG -> assignRegisterOp(op, "float_neg", location) {
+                PIRFloatNegExpr(
                     operand = mapValue(proto.floatNeg.src),
                     type = mapType(proto.floatNeg.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.FLOAT_COMPARISON_OP -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "float_cmp", location.line),
-                expr = PIRCmpExpr(
+            RegisterOp.RegisterOpCase.FLOAT_COMPARISON_OP -> assignRegisterOp(op, "float_cmp", location) {
+                PIRCmpExpr(
                     lhs = mapValue(proto.floatComparisonOp.lhs),
                     rhs = mapValue(proto.floatComparisonOp.rhs),
                     op = mapFloatCmpKind(proto.floatComparisonOp.op),
                     type = mapType(proto.floatComparisonOp.type),
                     line = location.line
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.LOAD_MEM -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "load_mem", location.line),
-                expr = PIRLoadMemExpr(
+            RegisterOp.RegisterOpCase.LOAD_MEM -> assignRegisterOp(op, "load_mem", location) {
+                PIRLoadMemExpr(
                     address = mapValue(proto.loadMem.src),
                     type = mapType(proto.loadMem.type),
                     line = location.line,
                     isBorrowed = proto.loadMem.isBorrowed
                 )
-            )
+            }
 
-            RegisterOp.RegisterOpCase.GET_ELEMENT_PTR -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "get_element_ptr", location.line),
-                expr = PIRGetElementPtrExpr(
+            RegisterOp.RegisterOpCase.GET_ELEMENT -> assignRegisterOp(op, "get_element", location) {
+                PIRGetElementExpr(
+                    src = mapValue(proto.getElement.src),
+                    srcType = mapType(proto.getElement.srcType),
+                    field = proto.getElement.field,
+                    type = mapType(proto.getElement.type),
+                    line = location.line,
+                    isBorrowed = proto.getElement.isBorrowed
+                )
+            }
+
+            RegisterOp.RegisterOpCase.GET_ELEMENT_PTR -> assignRegisterOp(op, "get_element_ptr", location) {
+                PIRGetElementPtrExpr(
                     src = mapValue(proto.getElementPtr.src),
                     srcType = mapPrimitiveEmbedded(proto.getElementPtr.srcType, "gep_src"),
                     field = proto.getElementPtr.field,
                     type = PIRPrimitiveTypes.POINTER,
                     line = location.line
                 )
-            )
+            }
 
             RegisterOp.RegisterOpCase.SET_ELEMENT -> PIREffectInst(
                 location,
@@ -614,10 +596,18 @@ class ProtoToPirMapper {
                 )
             )
 
-            RegisterOp.RegisterOpCase.LOAD_ADDRESS -> assignExpr(
-                location = location,
-                result = resultRegisterOf(op, "load_address", location.line),
-                expr = PIRLoadAddressExpr(
+            RegisterOp.RegisterOpCase.SET_MEM -> PIREffectInst(
+                location,
+                PIRSetMemExpr(
+                    destType = mapType(proto.setMem.destType),
+                    dest = mapValue(proto.setMem.dest),
+                    src = mapValue(proto.setMem.src),
+                    line = location.line
+                )
+            )
+
+            RegisterOp.RegisterOpCase.LOAD_ADDRESS -> assignRegisterOp(op, "load_address", location) {
+                PIRLoadAddressExpr(
                     target = when (proto.loadAddress.srcTypeCase) {
                         LoadAddress.SrcTypeCase.STR_SRC -> proto.loadAddress.strSrc
                         LoadAddress.SrcTypeCase.REG_SRC -> mapRegister(proto.loadAddress.regSrc)
@@ -630,17 +620,17 @@ class ProtoToPirMapper {
                             line = location.line
                         )
                         LoadAddress.SrcTypeCase.SRCTYPE_NOT_SET,
-                        null -> error("LoadAddress has no src_type")
+                        null -> ""
                     },
                     type = PIRPrimitiveTypes.POINTER,
                     line = location.line
                 )
-            )
+            }
 
             RegisterOp.RegisterOpCase.KEEP_ALIVE -> PIREffectInst(
                 location,
                 PIRKeepAliveExpr(
-                    src = proto.keepAlive.srcList.map(::mapValue),
+                    src = mapValues(proto.keepAlive.srcList),
                     line = location.line
                 )
             )
@@ -653,11 +643,8 @@ class ProtoToPirMapper {
                 )
             )
 
-            null -> {
-                error("RegisterOp is empty")
-            }
-
-            RegisterOp.RegisterOpCase.REGISTEROP_NOT_SET -> TODO()
+            null,
+            RegisterOp.RegisterOpCase.REGISTEROP_NOT_SET -> unsupportedRegisterOp(op, location)
         }
     }
 
@@ -673,26 +660,37 @@ class ProtoToPirMapper {
         )
     }
 
+    private fun assignRegisterOp(
+        op: Op,
+        fallbackName: String,
+        location: PIRInstLocation,
+        exprBuilder: () -> PIRExpr
+    ): PIRAssignInst {
+        val expr = exprBuilder()
+        val result = resultRegisterOf(op, fallbackName, location.line)
+        return assignExpr(location, result, expr)
+    }
+
     fun mapValue(proto: ir.Value): PIRValue {
         return when (proto.valueCase) {
             ir.Value.ValueCase.REGISTER -> mapRegister(proto.register)
 
             ir.Value.ValueCase.INTEGER -> PIRInteger(
-                value = proto.integer.value.toInt(),
+                value = proto.integer.value.coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt(),
                 type = mapType(proto.integer.type),
                 line = proto.integer.line,
                 isBorrowed = proto.isBorrowed
             )
 
             ir.Value.ValueCase.FLOAT_VAL -> PIRFloat(
-                value = Double.fromBits(proto.floatVal.value),
+                value = proto.floatVal.value,
                 type = mapType(proto.floatVal.type),
                 line = proto.floatVal.line,
                 isBorrowed = proto.isBorrowed
             )
 
             ir.Value.ValueCase.CSTRING -> PIRCString(
-                value = proto.cstring.value.toString().encodeToByteArray(),
+                value = proto.cstring.value.toByteArray(),
                 type = mapType(proto.cstring.type),
                 line = proto.cstring.line,
                 isBorrowed = proto.isBorrowed
@@ -704,11 +702,7 @@ class ProtoToPirMapper {
                 isBorrowed = proto.isBorrowed
             )
 
-            ir.Value.ValueCase.OP -> resultRegisterOf(
-                proto.op,
-                fallbackNameForOp(proto.op.name),
-                proto.line
-            )
+            ir.Value.ValueCase.OP -> resolveValueOpRegister(proto.op, proto.line)
 
             ir.Value.ValueCase.VALUE_NOT_SET,
             null -> PIRUndef(
@@ -861,9 +855,10 @@ class ProtoToPirMapper {
         )
     }
 
-    private fun mapFuncDecl(proto: FuncDecl, argRegs: List<Register>): PIRFuncDecl {
-        val args = if (argRegs.isNotEmpty()) {
-            argRegs.map { reg ->
+    private fun mapFuncDecl(proto: FuncDecl, argRegs: List<Register>, tracebackName: String? = null): PIRFuncDecl {
+        val args = when {
+            proto.sig.runtimeArgsCount > 0 -> proto.sig.runtimeArgsList.map(::mapRuntimeArg)
+            argRegs.isNotEmpty() -> argRegs.map { reg ->
                 PIRRuntimeArg(
                     name = reg.name,
                     type = mapType(reg.type),
@@ -871,8 +866,7 @@ class ProtoToPirMapper {
                     posOnly = false
                 )
             }
-        } else {
-            proto.sig.argsList.mapIndexed { idx, argType ->
+            else -> proto.sig.argsList.mapIndexed { idx, argType ->
                 PIRRuntimeArg(
                     name = "arg$idx",
                     type = mapType(argType),
@@ -882,14 +876,38 @@ class ProtoToPirMapper {
             }
         }
 
+        val localInfo = inferLocalFunctionInfo(
+            name = proto.name,
+            className = proto.className.takeIf { proto.hasClassName() },
+            tracebackName = tracebackName
+        )
+
         return PIRFuncDecl(
             name = proto.name,
             className = if (proto.hasClassName()) proto.className else null,
             moduleName = proto.moduleName,
             sig = PIRFuncSignature(
                 args = args,
-                retType = mapType(proto.sig.retType)
+                retType = mapType(proto.sig.retType),
+                numBitmapArgs = proto.sig.numBitmapArgs
             ),
+            boundSig = proto.takeIf { it.hasBoundSig() }?.boundSig?.let { boundSig ->
+                PIRFuncSignature(
+                    args = when {
+                        boundSig.runtimeArgsCount > 0 -> boundSig.runtimeArgsList.map(::mapRuntimeArg)
+                        else -> boundSig.argsList.mapIndexed { idx, argType ->
+                            PIRRuntimeArg(
+                                name = "arg$idx",
+                                type = mapType(argType),
+                                kind = ARG_POS,
+                                posOnly = false
+                            )
+                        }
+                    },
+                    retType = mapType(boundSig.retType),
+                    numBitmapArgs = boundSig.numBitmapArgs
+                )
+            },
             kind = when (proto.kind) {
                 FunctionKind.FUNC_STATICMETHOD -> PIR_FUNC_STATICMETHOD
                 FunctionKind.FUNC_CLASSMETHOD -> PIR_FUNC_CLASSMETHOD
@@ -899,9 +917,61 @@ class ProtoToPirMapper {
             isPropGetter = proto.isPropGetter,
             isGenerator = proto.isGenerator,
             isCoroutine = proto.isCoroutine,
+            enclosingFunction = localInfo.enclosingFunction,
+            isLocal = localInfo.isLocal,
+            isLambda = localInfo.isLambda,
             implicit = proto.implicit,
             internal = proto.internal,
             line = if (proto.hasLine()) proto.line else null
+        )
+    }
+
+    private fun inferLocalFunctionInfo(
+        name: String,
+        className: String?,
+        tracebackName: String?
+    ): LocalFunctionInfo {
+        if (name != "__call__" || className.isNullOrBlank() || !className.endsWith("_obj")) {
+            return LocalFunctionInfo()
+        }
+
+        val callableStem = className.removeSuffix("_obj")
+        val lambdaMatch = LAMBDA_CALLABLE_NAME.matchEntire(callableStem)
+        if (lambdaMatch != null) {
+            val enclosing = lambdaMatch.groupValues.getOrNull(1).orEmpty().ifBlank { null }
+            return LocalFunctionInfo(
+                enclosingFunction = enclosing,
+                isLocal = enclosing != null,
+                isLambda = true
+            )
+        }
+
+        val sourceName = tracebackName
+            ?.takeIf { it.isNotBlank() && it != "<lambda>" && it != "<module>" }
+            ?: return LocalFunctionInfo()
+        val prefix = "${sourceName}_"
+        if (!callableStem.startsWith(prefix)) {
+            return LocalFunctionInfo()
+        }
+
+        val enclosing = callableStem.removePrefix(prefix).ifBlank { null }
+        return LocalFunctionInfo(
+            enclosingFunction = enclosing,
+            isLocal = enclosing != null,
+            isLambda = false
+        )
+    }
+
+    private companion object {
+        val LAMBDA_CALLABLE_NAME = Regex("""^__mypyc_lambda__\d+(?:_(.+))?$""")
+    }
+
+    private fun mapRuntimeArg(proto: ir.RuntimeArg): PIRRuntimeArg {
+        return PIRRuntimeArg(
+            name = proto.name,
+            type = mapType(proto.type),
+            kind = proto.kind,
+            posOnly = proto.posOnly
         )
     }
 
@@ -941,17 +1011,17 @@ class ProtoToPirMapper {
             priority = proto.priority,
             isPure = proto.isPure,
             experimental = proto.experimental,
-            dependencies = proto.dependenciesList.map(::mapDependency),
+            dependencies = proto.dependenciesList.mapNotNull(::mapDependency),
             isAmbiguous = proto.isAmbiguous
         )
     }
 
-    private fun mapDependency(proto: Dependency): PIRDependency {
+    private fun mapDependency(proto: Dependency): PIRDependency? {
         return when (proto.dependencyOneofCase) {
             Dependency.DependencyOneofCase.CAPSULA -> PIRCapsule(proto.capsula.name)
             Dependency.DependencyOneofCase.SOURCE_DEP -> PIRSourceDep(proto.sourceDep.path)
             Dependency.DependencyOneofCase.DEPENDENCYONEOF_NOT_SET,
-            null -> error("Unsupported dependency")
+            null -> null
         }
     }
 
@@ -1033,7 +1103,10 @@ class ProtoToPirMapper {
 
     private fun mapErrorKind(kind: Error_kind): Int =
         when (kind) {
+            Error_kind.ERR_MAGIC -> 1
             Error_kind.ERR_FALSE -> ERR_FALSE
+            Error_kind.ERR_ALWAYS -> 3
+            Error_kind.ERR_MAGIC_OVERLAPPING -> 4
             else -> ERR_NEVER
         }
 
@@ -1046,14 +1119,88 @@ class ProtoToPirMapper {
             return mapRegister(op.value.register)
         }
 
-        return syntheticResultCache.getOrPut(op) {
-            PIRRegister(
-                name = if (op.name.isNotBlank()) "__${op.name}_${fallbackName}" else "__tmp_$fallbackName",
-                type = if (op.hasValue()) mapType(op.value.type) else PIRPrimitiveTypes.OBJECT,
-                line = line,
-                isBorrowed = op.hasValue() && op.value.isBorrowed,
-                isArg = false
-            )
+        val resultType = if (op.hasValue()) mapType(op.value.type) else PIRPrimitiveTypes.OBJECT
+        val opLine = if (op.hasValue()) op.value.line else line
+        val aliasKey = syntheticResultAliasKey(op, fallbackName, opLine, resultType)
+
+        syntheticResultCache[op]?.let { return it }
+
+        return PIRRegister(
+            name = if (op.name.isNotBlank()) "__${fallbackName}_${nextSyntheticResultId.toString(16)}" else "__tmp_${fallbackName}_${nextSyntheticResultId.toString(16)}",
+            type = resultType,
+            line = opLine,
+            isBorrowed = op.hasValue() && op.value.isBorrowed,
+            isArg = false
+        ).also {
+            nextSyntheticResultId += 1
+            syntheticResultCache[op] = it
+            syntheticResultAliasCache.getOrPut(aliasKey, ::mutableListOf).add(it)
+        }
+    }
+
+    private fun resolveValueOpRegister(op: Op, line: Int): PIRRegister {
+        if (op.hasValue() && op.value.valueCase == ir.Value.ValueCase.REGISTER) {
+            return mapRegister(op.value.register)
+        }
+
+        syntheticResultCache[op]?.let { return it }
+
+        val resultType = if (op.hasValue()) mapType(op.value.type) else PIRPrimitiveTypes.OBJECT
+        val fallbackName = fallbackNameForOp(op.name)
+        val aliasKey = syntheticResultAliasKey(op, fallbackName, if (op.hasValue()) op.value.line else line, resultType)
+        syntheticResultAliasCache[aliasKey]?.lastOrNull()?.let { return it }
+
+        return PIRRegister(
+            name = if (op.name.isNotBlank()) "__${fallbackName}_${nextSyntheticResultId.toString(16)}" else "__tmp_${fallbackName}_${nextSyntheticResultId.toString(16)}",
+            type = resultType,
+            line = if (op.hasValue()) op.value.line else line,
+            isBorrowed = op.hasValue() && op.value.isBorrowed,
+            isArg = false
+        ).also {
+            nextSyntheticResultId += 1
+            syntheticResultCache[op] = it
+            syntheticResultAliasCache.getOrPut(aliasKey, ::mutableListOf).add(it)
+        }
+    }
+
+    private fun syntheticResultAliasKey(op: Op, fallbackName: String, line: Int, type: PIRType): String {
+        val name = fallbackNameForOp(op.name.ifBlank { fallbackName })
+        val borrowed = op.hasValue() && op.value.isBorrowed
+        return listOf(name, line.toString(), type.name, borrowed.toString()).joinToString("|")
+    }
+
+    private fun syntheticResultAliasKey(value: ir.Value): String? {
+        if (value.valueCase != ir.Value.ValueCase.OP) return null
+        val op = value.op
+        val resultType = if (op.hasValue()) mapType(op.value.type) else mapType(value.type)
+        val line = if (op.hasValue()) op.value.line else value.line
+        return syntheticResultAliasKey(op, fallbackNameForOp(op.name), line, resultType)
+    }
+
+    private fun mapValues(values: List<ir.Value>): List<PIRValue> {
+        val occurrenceCounts = mutableMapOf<String, Int>()
+        values.forEach { value ->
+            syntheticResultAliasKey(value)?.let { key ->
+                occurrenceCounts[key] = occurrenceCounts.getOrDefault(key, 0) + 1
+            }
+        }
+
+        val nextIndices = occurrenceCounts.mapValues { (key, count) ->
+            val historySize = syntheticResultAliasCache[key]?.size ?: 0
+            maxOf(0, historySize - count)
+        }.toMutableMap()
+
+        return values.map { value ->
+            val aliasKey = syntheticResultAliasKey(value)
+            val history = aliasKey?.let { syntheticResultAliasCache[it] }
+            if (aliasKey != null && history != null && history.isNotEmpty()) {
+                val nextIndex = nextIndices.getOrDefault(aliasKey, history.lastIndex)
+                val boundedIndex = nextIndex.coerceIn(0, history.lastIndex)
+                nextIndices[aliasKey] = boundedIndex + 1
+                history[boundedIndex]
+            } else {
+                mapValue(value)
+            }
         }
     }
 
@@ -1074,6 +1221,7 @@ class ProtoToPirMapper {
                 isGenerated = proto.isGenerated,
                 isAbstract = proto.isAbstract,
                 isExtClass = proto.isExtClass,
+                isFinalClass = proto.isFinalClass,
                 isAugmented = proto.isAugmented,
                 inheritsPython = proto.inheritsPython,
                 hasDict = proto.hasDict,
@@ -1082,7 +1230,9 @@ class ProtoToPirMapper {
                 serializable = proto.serializable,
                 builtinBase = proto.builtinBase.takeIf { it.isNotBlank() },
                 ctor = mapFuncDecl(proto.ctor, emptyList()),
-                setup = mapFuncDecl(proto.setup, emptyList())
+                setup = mapFuncDecl(proto.setup, emptyList()),
+                childrenKnown = if (proto.hasChildrenKnown()) proto.childrenKnown else true,
+                isAcyclic = proto.isAcyclic
             )
         }
     }
@@ -1114,15 +1264,49 @@ class ProtoToPirMapper {
         var nextIndex = 0
 
         for (block in blocks) {
-            require(block.opsCount > 0) {
-                "Empty basic blocks are not supported by this mapper yet (block label=${block.label})"
-            }
             val start = nextIndex
-            val end = nextIndex + block.opsCount - 1
+            val width = maxOf(1, block.opsCount)
+            val end = nextIndex + width - 1
             result[block.label] = start..end
             nextIndex = end + 1
         }
 
         return result
+    }
+
+    private fun noOpInst(location: PIRInstLocation): PIRInst {
+        return PIREffectInst(
+            location,
+            PIRKeepAliveExpr(
+                src = emptyList(),
+                line = location.line
+            )
+        )
+    }
+
+    private fun undefinedExpr(type: PIRType, line: Int, isBorrowed: Boolean): PIRExpr {
+        return PIRMoveExpr(
+            value = PIRUndef(
+                type = type,
+                line = line,
+                isBorrowed = isBorrowed
+            ),
+            type = type,
+            line = line,
+            isBorrowed = isBorrowed
+        )
+    }
+
+    private fun unsupportedRegisterOp(op: Op, location: PIRInstLocation): PIRInst {
+        if (!op.hasValue()) {
+            return noOpInst(location)
+        }
+
+        val result = resultRegisterOf(op, fallbackNameForOp(op.name), location.line)
+        return assignExpr(
+            location = location,
+            result = result,
+            expr = undefinedExpr(result.type, location.line, result.isBorrowed)
+        )
     }
 }

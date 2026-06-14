@@ -165,6 +165,9 @@ message Class {
   bool reuse_freed_instance = 38;
   bool is_enum = 39;
   string coroutine_name = 40;
+  bool is_final_class = 41;
+  bool is_acyclic = 42;
+  optional bool children_known = 43;
 }
 
 message FunctionCFG {
@@ -227,13 +230,13 @@ message Integer {
 }
 
 message Float {
-  int64 value = 1;
+  double value = 1;
   RType type = 2;
   int32 line = 3;
 }
 
 message CString {
-  int64 value = 1;
+  bytes value = 1;
   RType type = 2;
   int32 line = 3;
 }
@@ -351,6 +354,8 @@ message RegisterOp {
     LoadAddress load_address = 31;
     KeepAlive keep_alive = 32;
     Unborrow unborrow = 33;
+    GetElement get_element = 34;
+    SetMem set_mem = 35;
   }
 }
 
@@ -577,6 +582,14 @@ message LoadMem {
   bool is_borrowed = 3;
 }
 
+message GetElement {
+  RType type = 1;
+  Value src = 2;
+  RType src_type = 3;
+  string field = 4;
+  bool is_borrowed = 5;
+}
+
 message SetMem {
   RVoid type = 1;
   RType dest_type = 2;
@@ -667,10 +680,18 @@ message Dependency {
   }
 }
 
+message RuntimeArg {
+  string name = 1;
+  RType type = 2;
+  int32 kind = 3;
+  bool pos_only = 4;
+}
+
 message FuncSignature {
   repeated RType args = 1;
   RType ret_type = 2;
   int32 num_bitmap_args = 3;
+  repeated RuntimeArg runtime_args = 4;
 }
 
 enum FunctionKind {

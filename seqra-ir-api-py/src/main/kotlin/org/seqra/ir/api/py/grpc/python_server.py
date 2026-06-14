@@ -133,6 +133,9 @@ def convert_module(module: ModuleIR) -> ir_pb2.Module:
                 )
             )
 
+    dependencies = [convert_dependency(dep) for dep in getattr(module, "dependencies", [])]
+    dependencies = [dep for dep in dependencies if dep is not None]
+
     return ir_pb2.Module(
         fullname=safe_str(module.fullname),
         imports=list(getattr(module, "imports", [])),
@@ -140,7 +143,24 @@ def convert_module(module: ModuleIR) -> ir_pb2.Module:
         classes=[convert_class(c) for c in iter_classes(getattr(module, "classes", None))],
         final_names=final_names,
         type_var_names=list(getattr(module, "type_var_names", [])),
+        dependencies=dependencies,
     )
+
+
+def convert_dependency(dep) -> ir_pb2.Dependency | None:
+    if dep is None:
+        return None
+
+    class_name = getattr(getattr(dep, "__class__", None), "__name__", "")
+    if class_name == "Capsule":
+        return ir_pb2.Dependency(
+            capsula=ir_pb2.Capsula(name=safe_str(getattr(dep, "name", "")))
+        )
+    if class_name == "SourceDep":
+        return ir_pb2.Dependency(
+            source_dep=ir_pb2.SourceDep(path=safe_str(getattr(dep, "path", "")))
+        )
+    return None
 
 
 def convert_rtype(rtype) -> ir_pb2.RType:
@@ -191,7 +211,11 @@ def convert_rtype(rtype) -> ir_pb2.RType:
 
     elif class_name == "RInstance":
         # Полный class_ir можно добавить потом, если понадобится.
-        rtype_proto.rinstance.CopyFrom(ir_pb2.RInstance())
+        rinstance = ir_pb2.RInstance()
+        class_ir = getattr(rtype, "class_ir", None)
+        if class_ir is not None:
+            rinstance.class_ir.CopyFrom(convert_class_ref(class_ir))
+        rtype_proto.rinstance.CopyFrom(rinstance)
 
     elif class_name == "RUnion":
         runion = ir_pb2.RUnion()
@@ -249,11 +273,9 @@ def convert_value(value) -> ir_pb2.Value:
 
     elif class_name == "Float":
         raw_value = getattr(value, "value", 0.0)
-        if isinstance(raw_value, float):
-            raw_value = int(raw_value)
         value_proto.float_val.CopyFrom(
             ir_pb2.Float(
-                value=safe_int(raw_value, 0),
+                value=float(raw_value),
                 type=convert_rtype(getattr(value, "type", None)),
                 line=safe_int(getattr(value, "line", -1), -1),
             )
@@ -261,14 +283,11 @@ def convert_value(value) -> ir_pb2.Value:
 
     elif class_name == "CString":
         c_value = getattr(value, "value", "")
-        if isinstance(c_value, bytes):
-            try:
-                c_value = c_value.decode("utf-8", errors="replace")
-            except Exception:
-                c_value = str(c_value)
+        if isinstance(c_value, str):
+            c_value = c_value.encode("utf-8")
         value_proto.cstring.CopyFrom(
             ir_pb2.CString(
-                value=safe_int(c_value, 0),
+                value=bytes(c_value),
                 type=convert_rtype(getattr(value, "type", None)),
                 line=safe_int(getattr(value, "line", -1), -1),
             )
@@ -367,8 +386,24 @@ def convert_func_signature(sig) -> ir_pb2.FuncSignature:
     sig_proto = ir_pb2.FuncSignature()
 
     try:
-        for arg_type in getattr(sig, "args", []):
+        real_args = getattr(sig, "real_args", None)
+        if callable(real_args):
+            args = list(real_args())
+        else:
+            args = list(getattr(sig, "args", []))
+
+        for arg in args:
+            arg_type = getattr(arg, "type", arg)
             sig_proto.args.append(convert_rtype(arg_type))
+
+            if hasattr(arg, "name") and hasattr(arg, "type"):
+                runtime_arg = ir_pb2.RuntimeArg(
+                    name=safe_str(getattr(arg, "name", "")),
+                    type=convert_rtype(arg.type),
+                    kind=safe_int(getattr(arg, "kind", 0), 0),
+                    pos_only=safe_bool(getattr(arg, "pos_only", False)),
+                )
+                sig_proto.runtime_args.append(runtime_arg)
 
         ret_type = getattr(sig, "ret_type", None)
         if ret_type is not None:
@@ -973,6 +1008,23 @@ def convert_op(op: Op, block_labels: dict[int, int] | None = None) -> ir_pb2.Op:
             register_op.load_mem.CopyFrom(load_mem)
             op_proto.register_op.CopyFrom(register_op)
 
+        elif op_class_name == "GetElement":
+            register_op = ir_pb2.RegisterOp(error_kind=ir_pb2.ERR_NEVER)
+            get_element = ir_pb2.GetElement(
+                field=safe_str(getattr(op, "field", "")),
+                is_borrowed=safe_bool(getattr(op, "is_borrowed", False))
+            )
+
+            if hasattr(op, "type"):
+                get_element.type.CopyFrom(convert_rtype(op.type))
+            if hasattr(op, "src") and op.src is not None:
+                get_element.src.CopyFrom(convert_value(op.src))
+            if hasattr(op, "src_type"):
+                get_element.src_type.CopyFrom(convert_rtype(op.src_type))
+
+            register_op.get_element.CopyFrom(get_element)
+            op_proto.register_op.CopyFrom(register_op)
+
         elif op_class_name == "SetMem":
             register_op = ir_pb2.RegisterOp(error_kind=ir_pb2.ERR_NEVER)
             set_mem = ir_pb2.SetMem()
@@ -1128,14 +1180,9 @@ def convert_function(fn: FuncIR) -> ir_pb2.Function:
     )
 
 
-def convert_class(cls: MypyClassIR) -> ir_pb2.Class:
-    attributes = {}
-    for name, rtype in getattr(cls, "attributes", {}).items():
-        attributes[safe_str(name)] = convert_rtype(rtype)
-
-    methods = {}
-    for name, method in getattr(cls, "methods", {}).items():
-        methods[safe_str(name)] = convert_function(method)
+def convert_class_ref(cls: MypyClassIR | None) -> ir_pb2.Class:
+    if cls is None:
+        return ir_pb2.Class()
 
     return ir_pb2.Class(
         name=safe_str(getattr(cls, "name", "")),
@@ -1152,10 +1199,144 @@ def convert_class(cls: MypyClassIR) -> ir_pb2.Class:
         needs_getseters=safe_bool(getattr(cls, "needs_getseters", False)),
         serializable=safe_bool(getattr(cls, "_serializable", False)),
         builtin_base=safe_str(getattr(cls, "builtin_base", "") or ""),
+        is_final_class=safe_bool(getattr(cls, "is_final_class", False)),
+        is_acyclic=safe_bool(getattr(cls, "is_acyclic", False)),
+    )
+
+
+def convert_func_func(funcs) -> ir_pb2.FuncFunc:
+    func_func = ir_pb2.FuncFunc()
+    if not funcs:
+        return func_func
+
+    getter = funcs[0] if len(funcs) > 0 else None
+    setter = funcs[1] if len(funcs) > 1 else None
+
+    if getter is not None:
+        func_func.func1.CopyFrom(convert_function(getter))
+    if setter is not None:
+        func_func.func2.CopyFrom(convert_function(setter))
+    return func_func
+
+
+def convert_glue_method_entry(key, value) -> ir_pb2.GlueMethodEntry:
+    owner, name = key
+    class_string = ir_pb2.ClassString(name=safe_str(name))
+    getattr(class_string, "class").CopyFrom(convert_class_ref(owner))
+    return ir_pb2.GlueMethodEntry(
+        key=class_string,
+        value=convert_function(value),
+    )
+
+
+def convert_vtable_method(entry) -> ir_pb2.VTableMethod:
+    method = ir_pb2.VTableMethod(
+        cls=convert_class_ref(getattr(entry, "cls", None)),
+        name=safe_str(getattr(entry, "name", "")),
+        method=convert_function(getattr(entry, "method", None)),
+    )
+    shadow_method = getattr(entry, "shadow_method", None)
+    if shadow_method is not None:
+        method.shadow_method.CopyFrom(convert_function(shadow_method))
+    return method
+
+
+def convert_vtable_entries(entries) -> ir_pb2.VTableEntries:
+    return ir_pb2.VTableEntries(
+        entries=[convert_vtable_method(entry) for entry in (entries or [])]
+    )
+
+
+def convert_class(cls: MypyClassIR) -> ir_pb2.Class:
+    attributes = {}
+    for name, rtype in getattr(cls, "attributes", {}).items():
+        attributes[safe_str(name)] = convert_rtype(rtype)
+
+    method_decls = {}
+    for name, decl in getattr(cls, "method_decls", {}).items():
+        method_decls[safe_str(name)] = convert_func_decl(decl)
+
+    methods = {}
+    for name, method in getattr(cls, "methods", {}).items():
+        methods[safe_str(name)] = convert_function(method)
+
+    properties = {}
+    for name, funcs in getattr(cls, "properties", {}).items():
+        properties[safe_str(name)] = convert_func_func(funcs)
+
+    property_types = {}
+    for name, rtype in getattr(cls, "property_types", {}).items():
+        property_types[safe_str(name)] = convert_rtype(rtype)
+
+    class_proto = ir_pb2.Class(
+        name=safe_str(getattr(cls, "name", "")),
+        module_name=safe_str(getattr(cls, "module_name", "")),
+        is_trait=safe_bool(getattr(cls, "is_trait", False)),
+        is_generated=safe_bool(getattr(cls, "is_generated", False)),
+        is_abstract=safe_bool(getattr(cls, "is_abstract", False)),
+        is_ext_class=safe_bool(getattr(cls, "is_ext_class", False)),
+        is__class=True,
+        is_augmented=safe_bool(getattr(cls, "is_augmented", False)),
+        inherits_python=safe_bool(getattr(cls, "inherits_python", False)),
+        has_dict=safe_bool(getattr(cls, "has_dict", False)),
+        allow_interpreted_subclasses=safe_bool(getattr(cls, "allow_interpreted_subclasses", False)),
+        needs_getseters=safe_bool(getattr(cls, "needs_getseters", False)),
+        serializable=safe_bool(getattr(cls, "_serializable", False)),
+        builtin_base=safe_str(getattr(cls, "builtin_base", "") or ""),
+        ctor=convert_func_decl(getattr(cls, "ctor", None)),
+        setup=convert_func_decl(getattr(cls, "setup", None)),
         attributes=attributes,
         deletable=list(getattr(cls, "deletable", [])),
+        method_decls=method_decls,
         methods=methods,
+        glue_methods=[
+            convert_glue_method_entry(key, value)
+            for key, value in getattr(cls, "glue_methods", {}).items()
+        ],
+        properties=properties,
+        property_types=property_types,
+        vtable=dict(getattr(cls, "vtable", None) or {}),
+        attrs_with_defaults=sorted(getattr(cls, "attrs_with_defaults", [])),
+        _always_initialized_attrs=sorted(getattr(cls, "_always_initialized_attrs", [])),
+        _sometimes_initialized_attrs=sorted(getattr(cls, "_sometimes_initialized_attrs", [])),
+        init_self_leak=safe_bool(getattr(cls, "init_self_leak", False)),
+        bitmap_attrs=list(getattr(cls, "bitmap_attrs", [])),
+        reuse_freed_instance=safe_bool(getattr(cls, "reuse_freed_instance", False)),
+        is_enum=safe_bool(getattr(cls, "is_enum", False)),
+        coroutine_name=safe_str(getattr(cls, "coroutine_name", "") or ""),
+        is_final_class=safe_bool(getattr(cls, "is_final_class", False)),
+        is_acyclic=safe_bool(getattr(cls, "is_acyclic", False)),
     )
+
+    class_proto.vtable_entries.CopyFrom(convert_vtable_entries(getattr(cls, "vtable_entries", [])))
+
+    for trait, entries in getattr(cls, "trait_vtables", {}).items():
+        trait_entry = class_proto.trait_vtables.add()
+        trait_entry.trait.CopyFrom(convert_class_ref(trait))
+        trait_entry.vtable.CopyFrom(convert_vtable_entries(entries))
+
+    base = getattr(cls, "base", None)
+    if base is not None:
+        class_proto.base.CopyFrom(convert_class_ref(base))
+
+    for trait in getattr(cls, "traits", []):
+        class_proto.traits.add().CopyFrom(convert_class_ref(trait))
+    for item in getattr(cls, "mro", []):
+        class_proto.mro.add().CopyFrom(convert_class_ref(item))
+    for item in getattr(cls, "base_mro", []):
+        class_proto.base_mro.add().CopyFrom(convert_class_ref(item))
+
+    children = getattr(cls, "children", None)
+    class_proto.children_known = children is not None
+    if children is not None:
+        for child in children:
+            class_proto.children.add().CopyFrom(convert_class_ref(child))
+
+    env_user_function = getattr(cls, "env_user_function", None)
+    if env_user_function is not None:
+        class_proto.env_user_function.CopyFrom(convert_function(env_user_function))
+
+    return class_proto
 
 
 def convert_cfg(fn: FuncIR, cfg) -> ir_pb2.FunctionCFG:

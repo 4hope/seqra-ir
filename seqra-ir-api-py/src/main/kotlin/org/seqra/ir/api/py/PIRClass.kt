@@ -39,6 +39,7 @@ data class PIRClass(
     val mro: List<PIRClass> = emptyList(),
     val baseMro: List<PIRClass> = emptyList(),
     val children: List<PIRClass> = emptyList(),
+    val childrenKnown: Boolean = true,
     val attrsWithDefaults: Set<String> = emptySet(),
     val alwaysInitializedAttrs: Set<String> = emptySet(),
     val sometimesInitializedAttrs: Set<String> = emptySet(),
@@ -46,6 +47,7 @@ data class PIRClass(
     val bitmapAttrs: List<String> = emptyList(),
     val envUserFunction: PIRFunc? = null,
     val reuseFreedInstance: Boolean = false,
+    val isAcyclic: Boolean = false,
     val isEnum: Boolean = false,
     val coroutineName: String? = null
 ) {

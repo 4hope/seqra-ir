@@ -293,6 +293,19 @@ data class PIRLoadMemExpr(
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitLoadMem(this)
 }
 
+data class PIRGetElementExpr(
+    val src: PIRValue,
+    val srcType: PIRType,
+    val field: String,
+    override val type: PIRType,
+    override val line: Int = -1,
+    override val isBorrowed: Boolean = false,
+    override val errorKind: Int = ERR_NEVER
+) : PIRExpr {
+    override val operands: List<PIRValue> = listOf(src)
+    override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitGetElement(this)
+}
+
 data class PIRGetElementPtrExpr(
     val src: PIRValue,
     val srcType: PIRType,

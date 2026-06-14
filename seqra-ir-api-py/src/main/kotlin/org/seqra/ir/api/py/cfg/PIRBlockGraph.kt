@@ -9,7 +9,8 @@ data class PIRInstRef(
 
 data class PIRBasicBlock(
     val start: PIRInstRef,
-    val end: PIRInstRef
+    val end: PIRInstRef,
+    val errorHandler: PIRInstRef? = null
 ) {
     operator fun contains(inst: PIRInst): Boolean =
         inst.location.index in start.index..end.index

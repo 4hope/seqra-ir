@@ -80,6 +80,77 @@ class PIRToPythonEmitter(
         out.appendLine("        return None")
         out.appendLine("    if name == \"CPyImport_GetNativeAttrs\":")
         out.appendLine("        return None")
+        out.appendLine("    if name == \"CPyType_FromTemplate\" and args:")
+        out.appendLine("        return args[0]")
+        out.appendLine("    if name == \"CPy_InitSubclass\":")
+        out.appendLine("        return 0")
+        out.appendLine("    if name in {\"PyObject_RichCompare\", \"PyObject_RichCompareBool\"}:")
+        out.appendLine("        return __pir_rich_compare(*args)")
+        out.appendLine("    if name == \"PyObject_IsTrue\":")
+        out.appendLine("        return __pir_bool_to_int(args[0] if args else None)")
+        out.appendLine("    if name == \"PyObject_Not\":")
+        out.appendLine("        return __pir_bool_to_int(not (args[0] if args else None))")
+        out.appendLine("    if name == \"PyNumber_Negative\":")
+        out.appendLine("        return -(args[0] if args else 0)")
+        out.appendLine("    if name == \"PyNumber_Positive\":")
+        out.appendLine("        return +(args[0] if args else 0)")
+        out.appendLine("    if name == \"PyNumber_Absolute\":")
+        out.appendLine("        return abs(args[0] if args else 0)")
+        out.appendLine("    if name == \"PyNumber_Remainder\" and len(args) == 2:")
+        out.appendLine("        return args[0] % args[1]")
+        out.appendLine("    if name == \"PyNumber_FloorDivide\" and len(args) == 2:")
+        out.appendLine("        return args[0] // args[1]")
+        out.appendLine("    if name == \"PyNumber_Lshift\" and len(args) == 2:")
+        out.appendLine("        return args[0] << args[1]")
+        out.appendLine("    if name == \"PyNumber_Rshift\" and len(args) == 2:")
+        out.appendLine("        return args[0] >> args[1]")
+        out.appendLine("    if name == \"PyNumber_And\" and len(args) == 2:")
+        out.appendLine("        return args[0] & args[1]")
+        out.appendLine("    if name == \"PyNumber_Or\" and len(args) == 2:")
+        out.appendLine("        return args[0] | args[1]")
+        out.appendLine("    if name == \"PyNumber_Xor\" and len(args) == 2:")
+        out.appendLine("        return args[0] ^ args[1]")
+        out.appendLine("    if name == \"PyNumber_InPlaceAdd\" and len(args) == 2:")
+        out.appendLine("        return args[0] + args[1]")
+        out.appendLine("    if name == \"PyNumber_InPlaceSubtract\" and len(args) == 2:")
+        out.appendLine("        return args[0] - args[1]")
+        out.appendLine("    if name == \"PyNumber_InPlaceMultiply\" and len(args) == 2:")
+        out.appendLine("        return args[0] * args[1]")
+        out.appendLine("    if name in {\"PyObject_GetAttr\", \"CPyObject_GetAttr\"} and len(args) >= 2:")
+        out.appendLine("        return getattr(args[0], str(args[1]))")
+        out.appendLine("    if name in {\"PyObject_SetAttr\", \"CPyObject_SetAttr\"} and len(args) >= 3:")
+        out.appendLine("        setattr(args[0], str(args[1]), args[2])")
+        out.appendLine("        return 0")
+        out.appendLine("    if name in {\"PyObject_GetItem\", \"PySequence_GetItem\"} and len(args) >= 2:")
+        out.appendLine("        return args[0][args[1]]")
+        out.appendLine("    if name == \"PyObject_SetItem\" and len(args) >= 3:")
+        out.appendLine("        args[0][args[1]] = args[2]")
+        out.appendLine("        return 0")
+        out.appendLine("    if name in {\"PyList_GetItem\", \"PyTuple_GetItem\"} and len(args) >= 2:")
+        out.appendLine("        return args[0][args[1]]")
+        out.appendLine("    if name == \"PyList_SetItem\" and len(args) >= 3:")
+        out.appendLine("        args[0][args[1]] = args[2]")
+        out.appendLine("        return 0")
+        out.appendLine("    if name == \"PyList_Append\" and len(args) >= 2:")
+        out.appendLine("        args[0].append(args[1])")
+        out.appendLine("        return 0")
+        out.appendLine("    if name == \"PyList_New\" and args:")
+        out.appendLine("        return [None] * int(args[0])")
+        out.appendLine("    if name == \"PyTuple_Pack\" and args:")
+        out.appendLine("        count = int(args[0])")
+        out.appendLine("        return tuple(args[1:1 + count])")
+        out.appendLine("    if name in {\"PyDict_GetItem\", \"CPyDict_GetItem\"} and len(args) >= 2:")
+        out.appendLine("        return __pir_dict_get_item(args[0], args[1])")
+        out.appendLine("    if name in {\"PyDict_SetItem\", \"CPyDict_SetItem\"} and len(args) >= 3:")
+        out.appendLine("        return __pir_dict_set_item(args[0], args[1], args[2])")
+        out.appendLine("    if name == \"CPyDict_Build\" and args:")
+        out.appendLine("        return __pir_dict_build(*args)")
+        out.appendLine("    if name == \"PyObject_Length\" and args:")
+        out.appendLine("        return len(args[0])")
+        out.appendLine("    if name == \"PyObject_IsInstance\" and len(args) >= 2:")
+        out.appendLine("        return __pir_bool_to_int(isinstance(args[0], args[1]))")
+        out.appendLine("    if name == \"PyObject_Type\" and args:")
+        out.appendLine("        return type(args[0])")
         out.appendLine("    return None")
         out.appendLine()
 
@@ -104,12 +175,111 @@ class PIRToPythonEmitter(
         out.appendLine("    return None")
         out.appendLine()
 
+        out.appendLine("def __pir_dict_get_item(mapping, key):")
+        out.appendLine("    try:")
+        out.appendLine("        return mapping[key]")
+        out.appendLine("    except Exception:")
+        out.appendLine("        return __PIR_ERROR")
+        out.appendLine()
+
+        out.appendLine("def __pir_dict_set_item(mapping, key, value):")
+        out.appendLine("    try:")
+        out.appendLine("        mapping[key] = value")
+        out.appendLine("        return 0")
+        out.appendLine("    except Exception:")
+        out.appendLine("        return -1")
+        out.appendLine()
+
+        out.appendLine("def __pir_dict_build(*args):")
+        out.appendLine("    if not args:")
+        out.appendLine("        return {}")
+        out.appendLine("    count = int(args[0])")
+        out.appendLine("    result = {}")
+        out.appendLine("    for index in range(count):")
+        out.appendLine("        offset = 1 + index * 2")
+        out.appendLine("        if offset + 1 >= len(args):")
+        out.appendLine("            break")
+        out.appendLine("        result[args[offset]] = args[offset + 1]")
+        out.appendLine("    return result")
+        out.appendLine()
+
+        out.appendLine("def __pir_bool_to_int(value):")
+        out.appendLine("    try:")
+        out.appendLine("        return 1 if value else 0")
+        out.appendLine("    except Exception:")
+        out.appendLine("        return -1")
+        out.appendLine()
+
+        out.appendLine("def __pir_rich_compare(lhs, rhs, op):")
+        out.appendLine("    if op == 0:")
+        out.appendLine("        return lhs < rhs")
+        out.appendLine("    if op == 1:")
+        out.appendLine("        return lhs <= rhs")
+        out.appendLine("    if op == 2:")
+        out.appendLine("        return lhs == rhs")
+        out.appendLine("    if op == 3:")
+        out.appendLine("        return lhs != rhs")
+        out.appendLine("    if op == 4:")
+        out.appendLine("        return lhs > rhs")
+        out.appendLine("    if op == 5:")
+        out.appendLine("        return lhs >= rhs")
+        out.appendLine("    raise ValueError(f'unsupported rich compare opcode: {op}')")
+        out.appendLine()
+
         out.appendLine("def __pir_primitive(name, *args):")
-        out.appendLine("    # runtime stub for mypyc primitive op")
+        out.appendLine("    if name in {\"int_eq\", \"bool_eq\"} and len(args) == 2:")
+        out.appendLine("        return args[0] == args[1]")
+        out.appendLine("    if name in {\"int_ne\", \"bool_ne\"} and len(args) == 2:")
+        out.appendLine("        return args[0] != args[1]")
+        out.appendLine("    if name == \"int_lt\" and len(args) == 2:")
+        out.appendLine("        return args[0] < args[1]")
+        out.appendLine("    if name == \"int_le\" and len(args) == 2:")
+        out.appendLine("        return args[0] <= args[1]")
+        out.appendLine("    if name == \"int_gt\" and len(args) == 2:")
+        out.appendLine("        return args[0] > args[1]")
+        out.appendLine("    if name == \"int_ge\" and len(args) == 2:")
+        out.appendLine("        return args[0] >= args[1]")
+        out.appendLine("    if name in {\"int_add\", \"CPyTagged_Add\"} and len(args) == 2:")
+        out.appendLine("        return args[0] + args[1]")
+        out.appendLine("    if name in {\"int_sub\", \"CPyTagged_Subtract\"} and len(args) == 2:")
+        out.appendLine("        return args[0] - args[1]")
+        out.appendLine("    if name in {\"int_mul\", \"CPyTagged_Multiply\"} and len(args) == 2:")
+        out.appendLine("        return args[0] * args[1]")
+        out.appendLine("    if name in {\"int_floordiv\", \"int_div\"} and len(args) == 2:")
+        out.appendLine("        return args[0] // args[1]")
+        out.appendLine("    if name == \"int_mod\" and len(args) == 2:")
+        out.appendLine("        return args[0] % args[1]")
+        out.appendLine("    if name == \"int_neg\" and len(args) == 1:")
+        out.appendLine("        return -args[0]")
+        out.appendLine("    if name == \"float_add\" and len(args) == 2:")
+        out.appendLine("        return args[0] + args[1]")
+        out.appendLine("    if name == \"float_sub\" and len(args) == 2:")
+        out.appendLine("        return args[0] - args[1]")
+        out.appendLine("    if name == \"float_mul\" and len(args) == 2:")
+        out.appendLine("        return args[0] * args[1]")
+        out.appendLine("    if name == \"float_div\" and len(args) == 2:")
+        out.appendLine("        return args[0] / args[1]")
+        out.appendLine("    if name == \"float_neg\" and len(args) == 1:")
+        out.appendLine("        return -args[0]")
+        out.appendLine("    if name == \"list_get_item_unsafe\" and len(args) == 2:")
+        out.appendLine("        return args[0][args[1]]")
+        out.appendLine("    if name == \"list_items\" and len(args) == 1:")
+        out.appendLine("        return args[0]")
+        out.appendLine("    if name == \"buf_init_item\" and len(args) == 3:")
+        out.appendLine("        args[0][int(args[1])] = args[2]")
+        out.appendLine("        return 0")
+        out.appendLine("    if name == \"dict_get_item\" and len(args) == 2:")
+        out.appendLine("        return __pir_dict_get_item(args[0], args[1])")
         out.appendLine("    raise NotImplementedError(f'primitive op not implemented: {name}')")
         out.appendLine()
 
         out.appendLine("def __pir_load_address(x):")
+        out.appendLine("    if x == \"_Py_NoneStruct\":")
+        out.appendLine("        return None")
+        out.appendLine("    if x == \"_Py_TrueStruct\":")
+        out.appendLine("        return True")
+        out.appendLine("    if x == \"_Py_FalseStruct\":")
+        out.appendLine("        return False")
         out.appendLine("    return x")
         out.appendLine()
 
@@ -143,6 +313,20 @@ class PIRToPythonEmitter(
         out.appendLine("    if value is None:")
         out.appendLine("        raise RuntimeError(class_name)")
         out.appendLine("    raise RuntimeError(f'{class_name}: {value}')")
+        out.appendLine()
+        out.appendLine("PIR_ERROR = __PIR_ERROR")
+        out.appendLine("pir_is_error = __pir_is_error")
+        out.appendLine("pir_call_c = __pir_call_c")
+        out.appendLine("pir_dict_get_item = __pir_dict_get_item")
+        out.appendLine("pir_dict_set_item = __pir_dict_set_item")
+        out.appendLine("pir_primitive = __pir_primitive")
+        out.appendLine("pir_load_address = __pir_load_address")
+        out.appendLine("pir_load_mem = __pir_load_mem")
+        out.appendLine("pir_set_mem = __pir_set_mem")
+        out.appendLine("pir_get_element_ptr = __pir_get_element_ptr")
+        out.appendLine("pir_set_element = __pir_set_element")
+        out.appendLine("pir_keep_alive = __pir_keep_alive")
+        out.appendLine("pir_raise_standard_error = __pir_raise_standard_error")
         out.appendLine()
     }
 
@@ -185,23 +369,33 @@ class PIRToPythonEmitter(
     }
 
     private fun emitClass(cls: PIRClass, out: StringBuilder) {
+        val className = pySafeName(cls.name)
         val base = cls.base?.name?.takeIf { it.isNotBlank() } ?: "object"
-        out.appendLine("class ${pySafeName(cls.name)}($base):")
+        out.appendLine("class $className($base):")
 
         val methods = cls.methods.values.sortedBy { it.decl.name }
 
         if (methods.isEmpty()) {
             out.appendLine("    pass")
-            return
+        } else {
+            out.appendLine()
+            methods.forEachIndexed { idx, fn ->
+                emitFunction(fn, out, indent = "    ")
+                if (idx != methods.lastIndex) {
+                    out.appendLine()
+                }
+            }
         }
 
         out.appendLine()
-        methods.forEachIndexed { idx, fn ->
-            emitFunction(fn, out, indent = "    ")
-            if (idx != methods.lastIndex) {
-                out.appendLine()
-            }
-        }
+        // The upstream Python IR may still contain mypyc-style class bootstrap ops
+        // (template/vtable/coroutine setup) even though the emitted Python class is already enough.
+        out.appendLine("${className}_template = $className")
+        out.appendLine("def ${className}_trait_vtable_setup():")
+        out.appendLine("    return None")
+        out.appendLine()
+        out.appendLine("def ${className}_coroutine_setup(cls):")
+        out.appendLine("    return cls")
     }
 
     private fun emitFunction(fn: PIRFunc, out: StringBuilder, indent: String) {
@@ -243,9 +437,8 @@ class PIRToPythonEmitter(
             if (blockInstructions.isEmpty()) {
                 out.appendLine("${blockIndent}return None")
             } else {
-                blockInstructions.forEach { inst ->
-                    emitInst(inst, out, blockIndent)
-                }
+                val initReturnsNone = fn.decl.className != null && fn.decl.name == "__init__"
+                emitBlockInstructions(fn, blockInstructions, out, blockIndent, initReturnsNone)
 
                 val last = blockInstructions.last()
                 if (last !is PIRGotoInst &&
@@ -268,7 +461,7 @@ class PIRToPythonEmitter(
         out.appendLine("${loopIndent}    raise RuntimeError(f'bad pc: {__pc}')")
     }
 
-    private fun emitInst(inst: PIRInst, out: StringBuilder, indent: String) {
+    private fun emitInst(inst: PIRInst, out: StringBuilder, indent: String, initReturnsNone: Boolean = false) {
         when (inst) {
             is PIRAssignInst -> {
                 out.appendLine("${indent}${emitValue(inst.lhv)} = ${emitExpr(inst.rhv)}")
@@ -295,7 +488,9 @@ class PIRToPythonEmitter(
             }
 
             is PIRReturnInst -> {
-                if (inst.returnValue == null) {
+                if (initReturnsNone) {
+                    out.appendLine("${indent}return None")
+                } else if (inst.returnValue == null) {
                     out.appendLine("${indent}return None")
                 } else {
                     out.appendLine("${indent}return ${emitValue(inst.returnValue)}")
@@ -312,6 +507,92 @@ class PIRToPythonEmitter(
         }
     }
 
+    private fun emitBlockInstructions(
+        fn: PIRFunc,
+        blockInstructions: List<PIRInst>,
+        out: StringBuilder,
+        indent: String,
+        initReturnsNone: Boolean
+    ) {
+        var index = 0
+        while (index < blockInstructions.size) {
+            val inst = blockInstructions[index]
+            val recoveredExpr = recoverDegradedAssign(fn, blockInstructions, index)
+            if (inst is PIRAssignInst && recoveredExpr != null) {
+                out.appendLine("${indent}${emitValue(inst.lhv)} = $recoveredExpr")
+            } else {
+                emitInst(inst, out, indent, initReturnsNone)
+            }
+            index += 1
+        }
+    }
+
+    private fun recoverDegradedAssign(
+        fn: PIRFunc,
+        blockInstructions: List<PIRInst>,
+        index: Int
+    ): String? {
+        val inst = blockInstructions.getOrNull(index) as? PIRAssignInst ?: return null
+        val primitive = inst.rhv as? PIRPrimitiveCallExpr ?: return null
+        if (primitive.primitive.name.isNotBlank() || primitive.args.isNotEmpty()) return null
+
+        return recoverDegradedMethodCall(blockInstructions, index)
+            ?: recoverDegradedTuple(fn, blockInstructions, index)
+    }
+
+    private fun recoverDegradedMethodCall(
+        blockInstructions: List<PIRInst>,
+        index: Int
+    ): String? {
+        val window = blockInstructions.subList(maxOf(0, index - 4), index)
+        val tupleExpr = window
+            .asReversed()
+            .mapNotNull { (it as? PIRAssignInst)?.rhv as? PIRTupleExpr }
+            .firstOrNull()
+            ?: return null
+        val methodName = window
+            .asReversed()
+            .mapNotNull { ((it as? PIRAssignInst)?.rhv as? PIRLiteralExpr)?.literal?.value as? String }
+            .firstOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        val receiver = emitValue(tupleExpr.items.first())
+        val args = tupleExpr.items.drop(1).joinToString(", ") { emitValue(it) }
+        return "$receiver.${pySafeName(methodName)}($args)"
+    }
+
+    private fun recoverDegradedTuple(
+        fn: PIRFunc,
+        blockInstructions: List<PIRInst>,
+        index: Int
+    ): String? {
+        val tupleAssign = blockInstructions.getOrNull(index) as? PIRAssignInst ?: return null
+        val tupleType = (tupleAssign.lhv.type as? PIRTupleType) ?: return null
+        val boxAssign = blockInstructions.getOrNull(index + 1) as? PIRAssignInst ?: return null
+        val boxExpr = boxAssign.rhv as? PIRBoxExpr ?: return null
+        if (boxExpr.operand != tupleAssign.lhv) return null
+
+        val sameLineValues = blockInstructions
+            .take(index)
+            .mapNotNull { previous ->
+                val assign = previous as? PIRAssignInst ?: return@mapNotNull null
+                if (assign.location.line != tupleAssign.location.line) return@mapNotNull null
+                assign.lhv
+            }
+        if (sameLineValues.isEmpty()) return null
+
+        val arity = tupleType.types.size
+        val prefixCount = arity - sameLineValues.size
+        if (prefixCount < 0 || prefixCount > fn.argRegs.size) return null
+
+        val recoveredItems = fn.argRegs.take(prefixCount) + sameLineValues.takeLast(arity - prefixCount)
+        if (recoveredItems.size != arity) return null
+
+        val items = recoveredItems.joinToString(", ") { emitValue(it) }
+        return if (recoveredItems.size == 1) "($items,)" else "($items)"
+    }
+
     private fun emitEffect(effect: PIREffectExpr, out: StringBuilder, indent: String) {
         when (effect) {
             is PIRSetAttrExpr -> {
@@ -323,16 +604,16 @@ class PIRToPythonEmitter(
             }
 
             is PIRSetMemExpr -> {
-                out.appendLine("${indent}__pir_set_mem(${emitValue(effect.dest)}, ${emitValue(effect.src)})")
+                out.appendLine("${indent}pir_set_mem(${emitValue(effect.dest)}, ${emitValue(effect.src)})")
             }
 
             is PIRSetElementExpr -> {
-                out.appendLine("${indent}__pir_set_element(${emitValue(effect.src)}, ${quote(effect.field)}, ${emitValue(effect.item)})")
+                out.appendLine("${indent}pir_set_element(${emitValue(effect.src)}, ${quote(effect.field)}, ${emitValue(effect.item)})")
             }
 
             is PIRKeepAliveExpr -> {
                 val args = effect.src.joinToString(", ") { emitValue(it) }
-                out.appendLine("${indent}__pir_keep_alive($args)")
+                out.appendLine("${indent}pir_keep_alive($args)")
             }
 
             is PIRIncRefExpr -> {
@@ -354,7 +635,7 @@ class PIRToPythonEmitter(
                     is String -> quote(v)
                     else -> quote(v.toString())
                 }
-                out.appendLine("${indent}__pir_raise_standard_error(${quote(effect.className)}, $valueExpr)")
+                out.appendLine("${indent}pir_raise_standard_error(${quote(effect.className)}, $valueExpr)")
             }
 
             else -> {
@@ -366,7 +647,7 @@ class PIRToPythonEmitter(
     private fun emitCondition(expr: PIRConditionExpr): String {
         return when (expr) {
             is PIRTruthExpr -> emitValue(expr.value)
-            is PIRErrorCheckExpr -> "__pir_is_error(${emitValue(expr.value)})"
+            is PIRErrorCheckExpr -> "pir_is_error(${emitValue(expr.value)})"
             else -> emitExpr(expr)
         }
     }
@@ -377,28 +658,34 @@ class PIRToPythonEmitter(
 
         return when (expr.functionName) {
             "CPyTagged_Add" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} + ${taggedArgs[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} + ${taggedArgs[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             "CPyTagged_Subtract" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} - ${taggedArgs[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} - ${taggedArgs[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             "CPyTagged_Multiply" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} * ${taggedArgs[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} * ${taggedArgs[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             "PyNumber_Add" ->
-                if (args.size == 2) "(${args[0]} + ${args[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (args.size == 2) "(${args[0]} + ${args[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             "PyNumber_Subtract" ->
-                if (args.size == 2) "(${args[0]} - ${args[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (args.size == 2) "(${args[0]} - ${args[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             "PyNumber_Multiply" ->
-                if (args.size == 2) "(${args[0]} * ${args[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (args.size == 2) "(${args[0]} * ${args[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             "PyNumber_TrueDivide" ->
-                if (args.size == 2) "(${args[0]} / ${args[1]})" else "__pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+                if (args.size == 2) "(${args[0]} / ${args[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+
+            "CPyDict_GetItem" ->
+                if (args.size == 2) "pir_dict_get_item(${args[0]}, ${args[1]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
+
+            "CPyDict_SetItem" ->
+                if (args.size == 3) "pir_dict_set_item(${args[0]}, ${args[1]}, ${args[2]})" else "pir_call_c(${quote(expr.functionName)}, ${args.joinToString(", ")})"
 
             else ->
-                "__pir_call_c(${quote(expr.functionName)}${if (args.isNotEmpty()) ", ${args.joinToString(", ")}" else ""})"
+                "pir_call_c(${quote(expr.functionName)}${if (args.isNotEmpty()) ", ${args.joinToString(", ")}" else ""})"
         }
     }
 
@@ -408,24 +695,24 @@ class PIRToPythonEmitter(
 
         return when (expr.primitive.name) {
             "int_eq" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} == ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} == ${taggedArgs[1]})" else "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
 
             "int_ne" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} != ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} != ${taggedArgs[1]})" else "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
 
             "int_lt" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} < ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} < ${taggedArgs[1]})" else "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
 
             "int_le" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} <= ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} <= ${taggedArgs[1]})" else "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
 
             "int_gt" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} > ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} > ${taggedArgs[1]})" else "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
 
             "int_ge" ->
-                if (taggedArgs.size == 2) "(${taggedArgs[0]} >= ${taggedArgs[1]})" else "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+                if (taggedArgs.size == 2) "(${taggedArgs[0]} >= ${taggedArgs[1]})" else "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
 
-            else -> "__pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
+            else -> "pir_primitive(${quote(expr.primitive.name)}${if (args.isNotEmpty()) ", $args" else ""})"
         }
     }
 
@@ -451,11 +738,11 @@ class PIRToPythonEmitter(
 
             is PIRCallCExpr -> emitCallC(expr)
 
-            is PIRLoadErrorValueExpr -> "__PIR_ERROR"
+            is PIRLoadErrorValueExpr -> "PIR_ERROR"
 
             is PIRGetAttrExpr -> "${emitValue(expr.obj)}.${pySafeName(expr.attr)}"
 
-            is PIRLoadStaticExpr -> pySafeName(expr.identifier)
+            is PIRLoadStaticExpr -> emitLoadStatic(expr)
 
             is PIRTupleExpr -> {
                 val items = expr.items.joinToString(", ") { emitValue(it) }
@@ -515,11 +802,13 @@ class PIRToPythonEmitter(
 
             is PIRFloatNegExpr -> "(-${emitValue(expr.operand)})"
 
-            is PIRLoadMemExpr -> "__pir_load_mem(${emitValue(expr.address)})"
+            is PIRLoadMemExpr -> "pir_load_mem(${emitValue(expr.address)})"
 
-            is PIRGetElementPtrExpr -> "__pir_get_element_ptr(${emitValue(expr.src)}, ${quote(expr.field)})"
+            is PIRGetElementExpr -> "pir_get_element(${emitValue(expr.src)}, ${quote(expr.field)})"
 
-            is PIRLoadAddressExpr -> "__pir_load_address(${emitLoadAddressTarget(expr.target)})"
+            is PIRGetElementPtrExpr -> "pir_get_element_ptr(${emitValue(expr.src)}, ${quote(expr.field)})"
+
+            is PIRLoadAddressExpr -> "pir_load_address(${emitLoadAddressTarget(expr.target)})"
 
             is PIRLoadGlobalExpr -> pySafeName(expr.identifier)
 
@@ -529,7 +818,7 @@ class PIRToPythonEmitter(
 
             is PIRTruthExpr -> emitValue(expr.value)
 
-            is PIRErrorCheckExpr -> "__pir_is_error(${emitValue(expr.value)})"
+            is PIRErrorCheckExpr -> "pir_is_error(${emitValue(expr.value)})"
 
             else -> "None"
         }
@@ -564,9 +853,23 @@ class PIRToPythonEmitter(
         return when (target) {
             is String -> quote(target)
             is PIRRegister -> pyName(target.name)
-            is PIRLoadStaticExpr -> pySafeName(target.identifier)
+            is PIRLoadStaticExpr -> emitLoadStatic(target)
             else -> quote(target.toString())
         }
+    }
+
+    private fun emitLoadStatic(expr: PIRLoadStaticExpr): String {
+        if (expr.identifier == "globals") {
+            return "globals()"
+        }
+
+        if (!expr.moduleName.isNullOrBlank() && expr.moduleName != currentModule?.fullname) {
+            val moduleAlias = pySafeName(expr.moduleName.substringAfterLast('.'))
+            val identifier = pySafeName(expr.identifier)
+            return if (moduleAlias == identifier) moduleAlias else "$moduleAlias.$identifier"
+        }
+
+        return pySafeName(expr.identifier)
     }
 
     private fun emitCallableName(decl: PIRFuncDecl): String {

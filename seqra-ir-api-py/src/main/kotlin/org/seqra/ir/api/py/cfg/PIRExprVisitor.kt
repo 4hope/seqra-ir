@@ -27,6 +27,7 @@ interface PIRExprVisitor<T> {
     fun visitFloatBin(expr: PIRFloatBinExpr): T
     fun visitFloatNeg(expr: PIRFloatNegExpr): T
     fun visitLoadMem(expr: PIRLoadMemExpr): T
+    fun visitGetElement(expr: PIRGetElementExpr): T
     fun visitGetElementPtr(expr: PIRGetElementPtrExpr): T
     fun visitLoadAddress(expr: PIRLoadAddressExpr): T
     fun visitLoadGlobal(expr: PIRLoadGlobalExpr): T
