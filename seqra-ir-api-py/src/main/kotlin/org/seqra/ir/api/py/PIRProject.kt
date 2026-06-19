@@ -112,6 +112,8 @@ interface PIRProject : Closeable, CommonProject {
     val locations: List<PIRRegisteredLocation>
     val features: List<PIRProjectFeature>?
 
+    fun allModules(): Collection<PIRModule> = emptyList()
+
     fun findModuleOrNull(name: String): PIRModule?
 
     fun findModules(name: String): Set<PIRModule>

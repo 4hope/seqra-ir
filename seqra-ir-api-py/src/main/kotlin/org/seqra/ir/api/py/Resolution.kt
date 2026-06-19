@@ -1,36 +1,7 @@
-package org.seqra.ir.api.py.analysis
+package org.seqra.ir.api.py
 
-import org.seqra.ir.api.common.cfg.BytecodeGraph
-import org.seqra.ir.api.common.cfg.CommonInst
-import org.seqra.ir.api.py.PIRClass
-import org.seqra.ir.api.py.PIRFunc
-import org.seqra.ir.api.py.PIRFuncDecl
-import org.seqra.ir.api.py.PIRInstanceType
-import org.seqra.ir.api.py.PIRModule
-import org.seqra.ir.api.py.PIRType
-import org.seqra.ir.api.py.PIRUnionType
-import org.seqra.ir.api.py.cfg.NAMESPACE_TYPE
-import org.seqra.ir.api.py.cfg.PIRArgument
-import org.seqra.ir.api.py.cfg.PIRAssignInst
-import org.seqra.ir.api.py.cfg.PIRBoxExpr
-import org.seqra.ir.api.py.cfg.PIRCallCExpr
-import org.seqra.ir.api.py.cfg.PIRCastExpr
-import org.seqra.ir.api.py.cfg.PIRDirectCallExpr
-import org.seqra.ir.api.py.cfg.PIRExpr
-import org.seqra.ir.api.py.cfg.PIRGetAttrExpr
-import org.seqra.ir.api.py.cfg.PIRIfInst
-import org.seqra.ir.api.py.cfg.PIRInst
-import org.seqra.ir.api.py.cfg.PIRLoadGlobalExpr
-import org.seqra.ir.api.py.cfg.PIRLoadStaticExpr
-import org.seqra.ir.api.py.cfg.PIRMethodCallExpr
-import org.seqra.ir.api.py.cfg.PIRMoveExpr
-import org.seqra.ir.api.py.cfg.PIRPhiExpr
-import org.seqra.ir.api.py.cfg.PIRPrimitiveCallExpr
-import org.seqra.ir.api.py.cfg.PIRPrimitiveDescription
-import org.seqra.ir.api.py.cfg.PIRRegister
-import org.seqra.ir.api.py.cfg.PIRUnboxExpr
-import org.seqra.ir.api.py.cfg.PIRValue
-import java.util.ArrayDeque
+import org.seqra.ir.api.py.cfg.*
+import java.util.*
 
 sealed interface PIRResolvedCallTarget
 
@@ -123,6 +94,8 @@ class PIRCallTargetIndex private constructor(
         }
     }
 
+    fun findClasses(className: String): Set<PIRClass> = resolveClasses(className)
+
     private fun resolveMethodInHierarchy(clazz: PIRClass, methodName: String): PIRResolvedFunctionTarget {
         hierarchy(clazz).forEach { current ->
             current.methods[methodName]?.let { return PIRResolvedFunctionTarget.fromFunction(it) }
@@ -188,8 +161,31 @@ class PIRCallTargetIndex private constructor(
 class PIRInstructionCallResolver(
     private val function: PIRFunc,
     private val index: PIRCallTargetIndex = PIRCallTargetIndex.EMPTY,
-    private val graph: BytecodeGraph<CommonInst> = function.flowGraph() as BytecodeGraph<CommonInst>,
+    private val graph: PIRGraph = function.flowGraph(),
 ) {
+
+    fun reachableInstructions(): List<PIRInst> {
+        val queue = ArrayDeque<PIRInst>()
+        val visited = linkedSetOf<PIRInst>()
+
+        queue.addAll(graph.entries)
+        if (queue.isEmpty()) {
+            queue.addAll(function.instructions)
+        }
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (!visited.add(current)) {
+                continue
+            }
+            graph.successors(current).forEach(queue::addLast)
+            graph.catchers(current).forEach { catcher ->
+                graph.successors(catcher).forEach(queue::addLast)
+            }
+        }
+
+        return visited.toList()
+    }
 
     fun resolve(instruction: PIRInst): PIRInstructionCallResolution? {
         val callExpr = instruction.callExpr ?: return null
@@ -204,6 +200,30 @@ class PIRInstructionCallResolver(
 
     fun resolveTargets(instruction: PIRInst): Set<PIRResolvedCallTarget> =
         resolve(instruction)?.targets.orEmpty()
+
+    fun resolveAll(): List<PIRInstructionCallResolution> =
+        reachableInstructions().mapNotNull(::resolve)
+
+    fun resolvedTargets(): Set<PIRResolvedCallTarget> =
+        resolveAll().flatMapTo(linkedSetOf()) { it.targets }
+
+    fun resolvedFunctions(): Set<PIRFunc> =
+        resolvedTargets().mapNotNullTo(linkedSetOf()) { (it as? PIRResolvedFunctionTarget)?.function }
+
+    fun resolvedFunctionDecls(): Set<PIRFuncDecl> =
+        resolvedTargets().mapNotNullTo(linkedSetOf()) { (it as? PIRResolvedFunctionTarget)?.decl }
+
+    fun resolvedClasses(): Set<PIRClass> =
+        resolvedTargets().flatMapTo(linkedSetOf()) { target ->
+            when (target) {
+                is PIRResolvedFunctionTarget -> when {
+                    target.function?.className != null -> linkedSetOf(target.function.enclosingClass)
+                    !target.className.isNullOrBlank() -> index.findClasses(target.className)
+                    else -> emptySet()
+                }
+                else -> emptySet()
+            }
+        }
 
     private fun resolveTargets(expr: PIRExpr, instruction: PIRInst): Pair<Set<PIRResolvedCallTarget>, Boolean> {
         return when (expr) {
@@ -377,3 +397,15 @@ fun PIRModule.callTargetIndex(): PIRCallTargetIndex = PIRCallTargetIndex.fromMod
 
 fun PIRFunc.callResolver(index: PIRCallTargetIndex = PIRCallTargetIndex.EMPTY): PIRInstructionCallResolver =
     PIRInstructionCallResolver(this, index)
+
+fun PIRFunc.resolvedCalls(index: PIRCallTargetIndex = PIRCallTargetIndex.EMPTY): List<PIRInstructionCallResolution> =
+    callResolver(index).resolveAll()
+
+fun PIRFunc.calledFunctions(index: PIRCallTargetIndex = PIRCallTargetIndex.EMPTY): Set<PIRFunc> =
+    callResolver(index).resolvedFunctions()
+
+fun PIRFunc.calledFunctionDecls(index: PIRCallTargetIndex = PIRCallTargetIndex.EMPTY): Set<PIRFuncDecl> =
+    callResolver(index).resolvedFunctionDecls()
+
+fun PIRFunc.calledClasses(index: PIRCallTargetIndex = PIRCallTargetIndex.EMPTY): Set<PIRClass> =
+    callResolver(index).resolvedClasses()

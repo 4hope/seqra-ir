@@ -353,7 +353,6 @@ data class PIRPhiExpr(
     override fun <T> accept(visitor: PIRExprVisitor<T>): T = visitor.visitPhi(this)
 }
 
-/** Side-effect expressions used by PIREffectInst **/
 interface PIREffectExpr : PIRExpr
 
 data class PIRSetAttrExpr(

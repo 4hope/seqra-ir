@@ -3,9 +3,6 @@ package org.seqra.ir.api.py
 import org.seqra.ir.api.common.CommonMethod
 import org.seqra.ir.api.common.CommonMethodParameter
 import org.seqra.ir.api.common.CommonTypeName
-import org.seqra.ir.api.common.cfg.BytecodeGraph
-import org.seqra.ir.api.common.cfg.CommonInst
-import org.seqra.ir.api.common.cfg.ControlFlowGraph
 import org.seqra.ir.api.py.cfg.*
 
 const val PIR_FUNC_NORMAL = 0
@@ -68,66 +65,7 @@ data class PIRFunc(
     override val parameters: List<CommonMethodParameter> get() = decl.sig.args
     override val returnType: CommonTypeName get() = decl.sig.retType
 
-    override fun flowGraph(): ControlFlowGraph<CommonInst> {
-        val insts = instructions
-        val instByIndex = insts.associateBy { it.location.index }
-        val blockByInst = insts.associateWith { inst -> blocks.firstOrNull { inst in it } }
-
-        fun mayThrow(inst: PIRInst): Boolean =
-            when (inst) {
-                is PIRAssignInst -> inst.rhv.errorKind != ERR_NEVER
-                is PIREffectInst -> inst.effect.errorKind != ERR_NEVER
-                else -> false
-            }
-
-        val regularSuccessors = insts.associateWith { inst ->
-            when (inst) {
-                is PIRGotoInst -> setOfNotNull(instByIndex[inst.target.index])
-                is PIRIfInst -> setOfNotNull(
-                    instByIndex[inst.trueBranch.index],
-                    instByIndex[inst.falseBranch.index]
-                )
-                is PIRReturnInst, is PIRUnreachableInst -> emptySet()
-                else -> instByIndex[inst.location.index + 1]?.let(::setOf) ?: emptySet()
-            }
-        }
-        val exceptionalSuccessors = insts.associateWith { inst ->
-            val block = blockByInst[inst]
-            val handler = block?.errorHandler?.inst ?: block?.errorHandler?.let { instByIndex[it.index] }
-            if (handler != null && mayThrow(inst)) setOf(handler) else emptySet()
-        }
-        val successors = insts.associateWith { inst ->
-            linkedSetOf<PIRInst>().apply {
-                addAll(regularSuccessors[inst].orEmpty())
-                addAll(exceptionalSuccessors[inst].orEmpty())
-            }
-        }
-        val predecessors = insts.associateWith { target ->
-            insts.filterTo(linkedSetOf()) { candidate ->
-                successors[candidate].orEmpty().contains(target)
-            }
-        }
-
-        return object : BytecodeGraph<CommonInst> {
-            override val instructions: List<CommonInst> = insts
-            override val entries: List<CommonInst> = insts.firstOrNull()?.let(::listOf) ?: emptyList()
-            override val exits: List<CommonInst> =
-                insts.filterTo(mutableListOf()) { regularSuccessors[it].isNullOrEmpty() }
-
-            override fun successors(node: CommonInst): Set<CommonInst> =
-                successors[node as? PIRInst].orEmpty()
-
-            override fun predecessors(node: CommonInst): Set<CommonInst> =
-                predecessors[node as? PIRInst].orEmpty()
-
-            override fun throwers(node: CommonInst): Set<CommonInst> =
-                predecessors[node as? PIRInst].orEmpty()
-                    .filterTo(linkedSetOf()) { exceptionalSuccessors[it].orEmpty().contains(node) }
-
-            override fun catchers(node: CommonInst): Set<CommonInst> =
-                exceptionalSuccessors[node as? PIRInst].orEmpty()
-        }
-    }
+    override fun flowGraph(): PIRGraph = PIRGraphImpl(this)
 
     val line: Int? get() = decl.line
     val className: String? get() = decl.className

@@ -388,8 +388,6 @@ class PIRToPythonEmitter(
         }
 
         out.appendLine()
-        // The upstream Python IR may still contain mypyc-style class bootstrap ops
-        // (template/vtable/coroutine setup) even though the emitted Python class is already enough.
         out.appendLine("${className}_template = $className")
         out.appendLine("def ${className}_trait_vtable_setup():")
         out.appendLine("    return None")

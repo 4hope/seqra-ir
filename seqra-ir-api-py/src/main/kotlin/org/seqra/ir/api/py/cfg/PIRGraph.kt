@@ -1,10 +1,11 @@
 package org.seqra.ir.api.py.cfg
 
+import org.seqra.ir.api.common.cfg.BytecodeGraph
 import org.seqra.ir.api.py.PIRClass
 
 
 
-interface PIRGraph : PIRBytecodeGraph<PIRInst> {
+interface PIRGraph : PIRBytecodeGraph<PIRInst>, BytecodeGraph<PIRInst> {
     override val instructions: List<PIRInst>
     val entry: PIRInst
 
@@ -17,8 +18,8 @@ interface PIRGraph : PIRBytecodeGraph<PIRInst> {
     fun previous(inst: PIRInst): PIRInst?
     fun next(inst: PIRInst): PIRInst?
 
-    fun throwers(node: PIRInst): Set<PIRInst>
-    fun catchers(node: PIRInst): Set<PIRCatchInst>
+    override fun throwers(node: PIRInst): Set<PIRInst>
+    override fun catchers(node: PIRInst): Set<PIRCatchInst>
 
     fun previous(inst: PIRInstRef): PIRInst?
     fun next(inst: PIRInstRef): PIRInst?
@@ -47,4 +48,3 @@ class PIRCatchInst(
     override fun <T> accept(visitor: PIRInstVisitor<T>): T =
         error("Catch instruction is not part of the minimal visitor set")
 }
-

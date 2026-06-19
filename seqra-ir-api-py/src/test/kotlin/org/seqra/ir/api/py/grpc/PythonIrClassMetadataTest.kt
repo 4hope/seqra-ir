@@ -32,9 +32,21 @@ class PythonIrClassMetadataTest {
     private val subprojectDir: Path = repoRoot.resolve("seqra-ir-api-py")
     private val fixtureSourcesDir: Path = subprojectDir.resolve("src").resolve("test").resolve("resources").resolve("python")
     private val fuzzCasesDir: Path = subprojectDir.resolve("fuzz_cases")
-    private val serverScriptWsl: String = toWslPath(fuzzCasesDir.resolve("start_python_ir_server.sh"))
+    private val grpcDirWsl: String = toWslPath(
+        repoRoot.resolve("seqra-ir-api-py")
+            .resolve("src")
+            .resolve("main")
+            .resolve("kotlin")
+            .resolve("org")
+            .resolve("seqra")
+            .resolve("ir")
+            .resolve("api")
+            .resolve("py")
+            .resolve("grpc")
+    )
     private val serverLog: Path = subprojectDir.resolve("build").resolve("tmp").resolve("python-ir-class-metadata-server.log")
     private val testSourcesDir: Path = subprojectDir.resolve("build").resolve("tmp").resolve("python-ir-class-metadata")
+    private val serverHost: String = resolveServerHost()
 
     private var serverProcess: Process? = null
 
@@ -44,13 +56,18 @@ class PythonIrClassMetadataTest {
         serverLog.parent.createDirectories()
         Files.deleteIfExists(serverLog)
 
-        serverProcess = ProcessBuilder("wsl.exe", "bash", serverScriptWsl)
+        serverProcess = ProcessBuilder(
+            "wsl.exe",
+            "bash",
+            "-lc",
+            "cd $grpcDirWsl && ./venv/bin/python ./python_server.py --host 0.0.0.0 --port 50051"
+        )
             .directory(repoRoot.toFile())
             .redirectErrorStream(true)
             .redirectOutput(serverLog.toFile())
             .start()
 
-        waitForPort("127.0.0.1", 50051, Duration.ofSeconds(20))
+        waitForPort(serverHost, 50051, Duration.ofSeconds(20))
     }
 
     @AfterAll
@@ -108,7 +125,7 @@ class PythonIrClassMetadataTest {
 
     private suspend fun fetchModules(sourceFiles: List<String>): List<PIRModule> {
         val channel = ManagedChannelBuilder
-            .forAddress("localhost", 50051)
+            .forAddress(serverHost, 50051)
             .usePlaintext()
             .build()
 
@@ -180,6 +197,16 @@ class PythonIrClassMetadataTest {
         } else {
             normalized
         }
+    }
+
+    private fun resolveServerHost(): String {
+        val process = ProcessBuilder("wsl.exe", "bash", "-lc", "hostname -I")
+            .directory(repoRoot.toFile())
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        process.waitFor()
+        return output.split(Regex("\\s+")).firstOrNull().orEmpty().ifBlank { "127.0.0.1" }
     }
 
     private fun buildFailureMessage(prefix: String, errors: List<String>): String {

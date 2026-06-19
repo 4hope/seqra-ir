@@ -22,6 +22,8 @@ data class PIRBasicBlock(
 interface PIRBlockGraph : PIRBytecodeGraph<PIRBasicBlock> {
     val pIRGraph: PIRGraph
     val entry: PIRBasicBlock
+    override val entries: List<PIRBasicBlock>
+        get() = if (instructions.isEmpty()) emptyList() else listOf(entry)
 
     fun instructions(block: PIRBasicBlock): List<PIRInst>
     fun block(inst: PIRInst): PIRBasicBlock

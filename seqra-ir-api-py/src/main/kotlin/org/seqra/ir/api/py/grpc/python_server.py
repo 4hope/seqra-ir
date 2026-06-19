@@ -210,7 +210,6 @@ def convert_rtype(rtype) -> ir_pb2.RType:
         rtype_proto.rvoid.CopyFrom(ir_pb2.RVoid())
 
     elif class_name == "RInstance":
-        # Полный class_ir можно добавить потом, если понадобится.
         rinstance = ir_pb2.RInstance()
         class_ir = getattr(rtype, "class_ir", None)
         if class_ir is not None:

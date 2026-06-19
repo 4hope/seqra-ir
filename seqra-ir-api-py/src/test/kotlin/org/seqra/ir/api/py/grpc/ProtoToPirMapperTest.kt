@@ -14,8 +14,6 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import org.seqra.ir.api.common.cfg.BytecodeGraph
-import org.seqra.ir.api.common.cfg.CommonInst
 import org.seqra.ir.api.py.ARG_NAMED_OPT
 import org.seqra.ir.api.py.ARG_POS
 import org.seqra.ir.api.py.ARG_STAR
@@ -485,14 +483,17 @@ class ProtoToPirMapperTest {
         assertNotNull(firstBlock.errorHandler)
         assertEquals(handlerBlock.start.index, firstBlock.errorHandler!!.index)
 
-        val graph = mapped.flowGraph() as BytecodeGraph<CommonInst>
+        val graph = mapped.flowGraph()
         val throwingInst = mapped.instructions.first()
         val handlerInst = mapped.instructions[1]
+        val catcher = graph.catchers(throwingInst).single()
 
         assertTrue(graph.successors(throwingInst).contains(handlerInst))
-        assertTrue(graph.catchers(throwingInst).contains(handlerInst))
-        assertTrue(graph.throwers(handlerInst).contains(throwingInst))
+        assertEquals(handlerInst.location.index, catcher.handler.start.index)
+        assertTrue(graph.throwers(catcher).contains(throwingInst))
         assertTrue(graph.exits.contains(handlerInst))
+        assertEquals(firstBlock, graph.blockGraph().block(throwingInst))
+        assertEquals(handlerBlock, graph.blockGraph().block(handlerInst))
         assertNull(mapped.blocks.last().errorHandler)
     }
 }

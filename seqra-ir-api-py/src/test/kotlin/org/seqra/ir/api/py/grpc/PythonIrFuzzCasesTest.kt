@@ -6,12 +6,14 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.DynamicTest
+import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.junit.jupiter.api.TestInstance
 import java.io.File
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.time.Duration
 import java.time.Instant
 import kotlin.io.path.absolutePathString
@@ -23,6 +25,8 @@ import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.nameWithoutExtension
 import kotlin.io.path.outputStream
 import kotlin.io.path.pathString
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PythonIrFuzzCasesTest {
@@ -31,10 +35,23 @@ class PythonIrFuzzCasesTest {
     private val subprojectDir: Path = repoRoot.resolve("seqra-ir-api-py")
     private val fuzzCasesDir: Path = subprojectDir.resolve("fuzz_cases")
     private val originalsDir: Path = fuzzCasesDir.resolve("originals")
+    private val fixtureSourcesDir: Path = subprojectDir.resolve("src").resolve("test").resolve("resources").resolve("python")
     private val generatedRootDir: Path = subprojectDir.resolve("build").resolve("tmp").resolve("python-ir-fuzz-generated")
+    private val grpcDirWsl: String = toWslPath(
+        repoRoot.resolve("seqra-ir-api-py")
+            .resolve("src")
+            .resolve("main")
+            .resolve("kotlin")
+            .resolve("org")
+            .resolve("seqra")
+            .resolve("ir")
+            .resolve("api")
+            .resolve("py")
+            .resolve("grpc")
+    )
     private val fuzzScript: Path = fuzzCasesDir.resolve("fuzz_compare.py")
-    private val serverScriptWsl: String = toWslPath(fuzzCasesDir.resolve("start_python_ir_server.sh"))
     private val serverLog: Path = subprojectDir.resolve("build").resolve("tmp").resolve("python-ir-server.log")
+    private val serverHost: String = resolveServerHost()
 
     private var serverProcess: Process? = null
 
@@ -44,13 +61,18 @@ class PythonIrFuzzCasesTest {
         serverLog.parent.createDirectories()
         Files.deleteIfExists(serverLog)
 
-        serverProcess = ProcessBuilder("wsl.exe", "bash", serverScriptWsl)
+        serverProcess = ProcessBuilder(
+            "wsl.exe",
+            "bash",
+            "-lc",
+            "cd $grpcDirWsl && ./venv/bin/python ./python_server.py --host 0.0.0.0 --port 50051"
+        )
             .directory(repoRoot.toFile())
             .redirectErrorStream(true)
             .redirectOutput(serverLog.toFile())
             .start()
 
-        waitForPort("127.0.0.1", 50051, Duration.ofSeconds(20))
+        waitForPort(serverHost, 50051, Duration.ofSeconds(20))
     }
 
     @AfterAll
@@ -79,7 +101,8 @@ class PythonIrFuzzCasesTest {
                 val result = runBlocking {
                     runPythonIrPipeline(
                         sourceFiles = listOf(toWslPath(originalPath)),
-                        outputDir = caseOutputDir.toFile()
+                        outputDir = caseOutputDir.toFile(),
+                        host = serverHost
                     )
                 }
 
@@ -110,6 +133,62 @@ class PythonIrFuzzCasesTest {
         }
     }
 
+    @Test
+    fun `pipeline emits python for multiple source files`() {
+        val caseRoot = generatedRootDir.resolve("multi_file_case")
+        caseRoot.toFile().deleteRecursively()
+        caseRoot.createDirectories()
+
+        val fixtureRoot = fixtureSourcesDir.resolve("multi_file_case")
+        val initFile = stageFixture(fixtureRoot.resolve("pkg").resolve("__init__.py"), caseRoot.resolve("pkg").resolve("__init__.py"))
+        val helpersFile = stageFixture(fixtureRoot.resolve("pkg").resolve("helpers.py"), caseRoot.resolve("pkg").resolve("helpers.py"))
+        val mainFile = stageFixture(fixtureRoot.resolve("main.py"), caseRoot.resolve("main.py"))
+
+        val outputDir = caseRoot.resolve("generated")
+        outputDir.toFile().deleteRecursively()
+        outputDir.createDirectories()
+
+        val result = runBlocking {
+            runPythonIrPipeline(
+                sourceFiles = listOf(
+                    toWslPath(mainFile),
+                    toWslPath(helpersFile),
+                    toWslPath(initFile)
+                ),
+                outputDir = outputDir.toFile(),
+                host = serverHost
+            )
+        }
+
+        assertTrue(result.success, buildFailureMessage("Pipeline failed", result.errors))
+        assertEquals(3, result.moduleCount, "Expected package, helper, and entry modules")
+
+        val generatedMain = outputDir.resolve("main_generated.py")
+        val generatedPkg = outputDir.resolve("pkg_generated.py")
+        val generatedHelpers = outputDir.resolve("pkg").resolve("helpers_generated.py")
+
+        assertTrue(generatedMain.exists(), "Missing generated entry module")
+        assertTrue(generatedPkg.exists(), "Missing generated package module")
+        assertTrue(generatedHelpers.exists(), "Missing generated helper module")
+
+        assertTrue(
+            result.generatedFiles.map { it.toPath().normalize() }.containsAll(
+                listOf(generatedMain, generatedPkg, generatedHelpers).map { it.normalize() }
+            ),
+            "Pipeline returned unexpected generated files: ${result.generatedFiles}"
+        )
+
+        assertTrue(
+            generatedMain.readText().contains("__pir_import_module(\"pkg.helpers_generated\", \"pkg.helpers\")"),
+            "Expected generated main module to import generated helper module"
+        )
+
+        runCommand(
+            listOf("py", "-3.12", "-m", "py_compile", generatedPkg.pathString, generatedHelpers.pathString, generatedMain.pathString),
+            "Python syntax check failed for multi-file generated output"
+        )
+    }
+
     private fun runCommand(command: List<String>, errorMessage: String) {
         val process = ProcessBuilder(command)
             .directory(repoRoot.toFile())
@@ -138,6 +217,12 @@ class PythonIrFuzzCasesTest {
         throw AssertionError("Timed out waiting for gRPC server on $host:$port\n$logTail", lastError)
     }
 
+    private fun stageFixture(source: Path, target: Path): Path {
+        target.parent?.createDirectories()
+        Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+        return target
+    }
+
     private fun findRepoRoot(): Path {
         var current = Path.of("").toAbsolutePath().normalize()
         while (true) {
@@ -155,6 +240,16 @@ class PythonIrFuzzCasesTest {
         } else {
             normalized
         }
+    }
+
+    private fun resolveServerHost(): String {
+        val process = ProcessBuilder("wsl.exe", "bash", "-lc", "hostname -I")
+            .directory(repoRoot.toFile())
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        process.waitFor()
+        return output.split(Regex("\\s+")).firstOrNull().orEmpty().ifBlank { "127.0.0.1" }
     }
 
     private fun buildFailureMessage(prefix: String, errors: List<String>): String {
