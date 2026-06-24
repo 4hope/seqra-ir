@@ -16,6 +16,11 @@ object Versions {
     const val lmdb_java = "0.9.0"
 
     const val jdot = "1.0"
+
+    const val protobuf = "3.25.1"
+    const val grpc = "1.62.2"
+    const val grpc_kotlin = "1.4.1"
+    const val protobuf_gradle_plugin = "0.9.4"
 }
 
 object Libs {
@@ -118,6 +123,60 @@ object Libs {
         group = "info.leadinglight",
         name = "jdot",
         version = Versions.jdot
+    )
+
+    val protobuf_kotlin = dep(
+        group = "com.google.protobuf",
+        name = "protobuf-kotlin",
+        version = Versions.protobuf
+    )
+
+    val protobuf_java_util = dep(
+        group = "com.google.protobuf",
+        name = "protobuf-java-util",
+        version = Versions.protobuf
+    )
+
+    val protoc = dep(
+        group = "com.google.protobuf",
+        name = "protoc",
+        version = Versions.protobuf
+    )
+
+    val grpc_kotlin_stub = dep(
+        group = "io.grpc",
+        name = "grpc-kotlin-stub",
+        version = Versions.grpc_kotlin
+    )
+
+    val grpc_protobuf = dep(
+        group = "io.grpc",
+        name = "grpc-protobuf",
+        version = Versions.grpc
+    )
+
+    val grpc_stub = dep(
+        group = "io.grpc",
+        name = "grpc-stub",
+        version = Versions.grpc
+    )
+
+    val grpc_okhttp = dep(
+        group = "io.grpc",
+        name = "grpc-okhttp",
+        version = Versions.grpc
+    )
+
+    val protoc_gen_grpc_java = dep(
+        group = "io.grpc",
+        name = "protoc-gen-grpc-java",
+        version = Versions.grpc
+    )
+
+    val protoc_gen_grpc_kotlin = dep(
+        group = "io.grpc",
+        name = "protoc-gen-grpc-kotlin",
+        version = Versions.grpc_kotlin
     )
 
 }

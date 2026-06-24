@@ -14,6 +14,8 @@ dependencies {
     compileOnly(Libs.guava)
     compileOnly(Libs.xodusUtils)
 
+    testImplementation(platform(JunitDependencies.Libs.junit_bom))
+    testImplementation(JunitDependencies.Libs.junit_jupiter)
     testImplementation(Libs.xodusEnvironment)
     testImplementation(Libs.lmdb_java)
     testImplementation(Libs.rocks_db)

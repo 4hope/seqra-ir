@@ -54,6 +54,9 @@ dependencies {
     testImplementation(Libs.xodusEnvironment)
     testImplementation(Libs.lmdb_java)
     testImplementation(Libs.rocks_db)
+    testImplementation(platform(JunitDependencies.Libs.junit_bom))
+    testImplementation(JunitDependencies.Libs.junit_jupiter)
+    testImplementation(KotlinDependency.Libs.kotlin_logging)
 
     testFixturesApi(Libs.jooq)
     testFixturesApi(Libs.sqlite)

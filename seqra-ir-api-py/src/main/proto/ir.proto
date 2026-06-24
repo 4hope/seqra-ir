@@ -1,0 +1,784 @@
+syntax = "proto3";
+
+package ir;
+
+option java_multiple_files = true;
+option java_package = "ir";
+
+service IRService {
+  rpc GetModules(SourceRequest) returns (ModuleResponse) {}
+
+  rpc GetClasses(SourceRequest) returns (ClassResponse) {}
+
+  rpc GetCFG(SourceRequest) returns (CFGResponse) {}
+
+  rpc GetAll(SourceRequest) returns (CompleteResponse) {}
+}
+
+message StringRtype {
+  string name = 1;
+  RType type = 2;
+}
+
+message ClassString {
+  Class class = 1;
+  string name = 2;
+}
+
+message FuncFunc {
+  Function func1 = 1;
+  Function func2 = 2;
+}
+
+message SourceRequest {
+  oneof source_type {
+    FileList files = 1;
+    DirectoryPath directory = 2;
+  }
+  bool include_metadata = 3;
+}
+
+message FileList {
+  repeated string files = 1;
+}
+
+message DirectoryPath {
+  string path = 1;
+}
+
+message ModuleResponse {
+  bool success = 1;
+  repeated Module modules = 2;
+  repeated string errors = 3;
+}
+
+message ClassResponse {
+  bool success = 1;
+  repeated Class classes = 2;
+  repeated string errors = 3;
+}
+
+message CFGResponse {
+  bool success = 1;
+  repeated FunctionCFG function_cfgs = 2;
+  repeated string errors = 3;
+}
+
+message CompleteResponse {
+  bool success = 1;
+  ModuleResponse modules = 2;
+  ClassResponse classes = 3;
+  CFGResponse cfgs = 4;
+  repeated string errors = 5;
+}
+
+message Module {
+  string fullname = 1;
+  repeated string imports = 2;
+  repeated Function functions = 3;
+  repeated Class classes = 4;
+  repeated StringRtype final_names  = 5;
+  repeated string type_var_names = 6;
+  repeated Dependency dependencies = 7;
+}
+
+message Function {
+  FuncDecl decl = 1;
+  repeated Register arg_regs = 2;
+  repeated BasicBlock blocks = 3;
+  string traceback_name = 5;
+}
+
+message NamedTuple {
+  string typename = 1;
+  map<string, string> field_defaults = 2;
+  repeated string fields = 3;
+  repeated string orig_bases = 4;
+  oneof tuple_type {
+    VTableMethod method = 5;
+  }
+}
+
+message VTableMethod {
+  Class cls = 1;
+  string name = 2;
+  Function method = 3;
+  oneof shadow_method_oneof {
+    Function shadow_method = 4;
+  }
+}
+
+message VTableEntries {
+  repeated VTableMethod entries = 1;
+}
+
+message GlueMethodEntry {
+  ClassString key = 1;
+  Function value = 2;
+}
+
+message TraitVTableEntry {
+  Class trait = 1;
+  VTableEntries vtable = 2;
+}
+
+message Class {
+  string name = 1;
+  string module_name = 2;
+  bool is_trait = 3;
+  bool is_generated = 4;
+  bool is_abstract = 5;
+  bool is_ext_class = 6;
+  bool is__class = 7;
+  bool is_augmented = 8;
+  bool inherits_python = 9;
+  bool has_dict = 10;
+  bool allow_interpreted_subclasses = 11;
+  bool needs_getseters = 12;
+  bool serializable = 13;
+  string builtin_base = 14;
+  FuncDecl ctor = 15;
+  FuncDecl setup = 16;
+  map<string, RType> attributes = 17;
+  repeated string deletable = 18;
+  map<string, FuncDecl> method_decls = 19;
+  map<string, Function> methods = 20;
+  repeated GlueMethodEntry glue_methods = 21;
+  map<string, FuncFunc> properties = 22;
+  map<string, RType> property_types = 23;
+  map<string, int32> vtable = 24;
+  VTableEntries vtable_entries = 25;
+  repeated TraitVTableEntry trait_vtables = 26;
+  Class base = 27;
+  repeated Class traits = 28;
+  repeated Class mro = 29;
+  repeated Class base_mro = 30;
+  repeated Class children = 31;
+  repeated string attrs_with_defaults = 32;
+  repeated string _always_initialized_attrs = 33;
+  repeated string _sometimes_initialized_attrs = 34;
+  bool init_self_leak = 35;
+  repeated string bitmap_attrs = 36;
+  oneof env_user_function_oneof {
+    Function env_user_function = 37;
+  }
+  bool reuse_freed_instance = 38;
+  bool is_enum = 39;
+  string coroutine_name = 40;
+  bool is_final_class = 41;
+  bool is_acyclic = 42;
+  optional bool children_known = 43;
+}
+
+message FunctionCFG {
+  string function_name = 2;
+  CFG cfg = 3;
+  repeated BasicBlock blocks = 4;
+  repeated CFGEdge edges = 5;
+}
+
+message CFGEdge {
+  int32 source = 1;
+  int32 target = 2;
+  string type = 3;
+}
+
+message CFGEntires {
+  BasicBlock basic_block = 1;
+  repeated BasicBlock basic_blocks = 2;
+}
+
+message CFG {
+  repeated CFGEntires succ = 1;
+  repeated CFGEntires pred = 2;
+  repeated BasicBlock exits = 3;
+}
+
+message BasicBlock {
+  int32 label = 1;
+  repeated Op ops = 2;
+  BasicBlock error_handler = 3;
+  bool referenced = 4;
+}
+
+message Value {
+  int32 line = 1;
+  RType type = 2;
+  bool is_borrowed = 3;
+  oneof value {
+    Register register = 4;
+    Integer integer = 5;
+    Float float_val = 6;
+    CString cstring = 7;
+    Undef undef = 8;
+    Op op = 9;
+  }
+}
+
+message Register {
+  RType type = 1;
+  string name = 2;
+  bool is_arg = 3;
+  bool is_borrowed = 4;
+  int32 line = 5;
+}
+
+message Integer {
+  int64 value = 1;
+  RType type = 2;
+  int32 line = 3;
+}
+
+message Float {
+  double value = 1;
+  RType type = 2;
+  int32 line = 3;
+}
+
+message CString {
+  bytes value = 1;
+  RType type = 2;
+  int32 line = 3;
+}
+
+message Undef {
+  RType type = 1;
+}
+
+message Op {
+  string name = 1;
+  Value value = 2;
+  oneof op {
+    BaseAssign base_assing = 3;
+    ControlOp control_op = 4;
+    RegisterOp register_op = 5;
+  }
+}
+
+message BaseAssign {
+  Register dest = 1;
+  oneof base_assing {
+      Assign assign = 2;
+      AssignMulti assing_multi = 3;
+  }
+}
+
+message Assign {
+  Value src = 1;
+}
+
+message AssignMulti {
+  repeated Value src = 1;
+}
+
+message ControlOp {
+  oneof control_op {
+    Goto goto = 1;
+    Branch branch = 2;
+    Return return = 3;
+    Unreachable unreachable = 4;
+  }
+}
+
+message Goto {
+  int32 label = 1;
+}
+
+message Branch {
+  enum OpType {
+    BOOL = 0;
+    IS_ERROR = 1;
+  }
+  Value value = 1;
+  BasicBlock true_label = 2;
+  BasicBlock false_label = 3;
+  OpType op = 4;
+  bool negated = 5;
+  TracebackEntry traceback_entry = 6;
+  bool rare = 7;
+}
+
+message TracebackEntry {
+  string func_name = 1;
+  int32 line = 2;
+}
+
+message Return {
+  Value value = 1;
+  int32 yield_target = 2;
+}
+
+message Unreachable {
+}
+
+enum Error_kind {
+  ERR_NEVER = 0;
+  ERR_MAGIC = 1;
+  ERR_FALSE = 2;
+  ERR_ALWAYS = 3;
+  ERR_MAGIC_OVERLAPPING = 4;
+}
+
+message RegisterOp {
+  Error_kind error_kind = 1;
+  oneof register_op {
+    IncRef inc_ref = 2;
+    DecRef dec_ref = 3;
+    Call call = 4;
+    MethodCall method_call = 5;
+    PrimitiveOp primitive_op = 6;
+    LoadErrorValue load_error_value = 7;
+    LoadLiteral load_literal = 8;
+    GetAttr get_attr = 9;
+    SetAttr set_attr = 10;
+    LoadStatic load_static = 11;
+    InitStatic init_static = 12;
+    TupleSet tuple_set = 13;
+    TupleGet tuple_get = 14;
+    Cast cast = 15;
+    Box box = 16;
+    Unbox unbox = 17;
+    RaiseStandardError raise_standard_error = 18;
+    CallC call_c = 19;
+    Truncate truncate = 20;
+    Extend extend = 21;
+    LoadGlobal load_global = 22;
+    IntOp int_op = 23;
+    ComparisonOp comparison_op = 24;
+    FloatOp float_op = 25;
+    FloatNeg float_neg = 26;
+    FloatComparisonOp float_comparison_op = 27;
+    LoadMem load_mem = 28;
+    GetElementPtr get_element_ptr = 29;
+    SetElement set_element = 30;
+    LoadAddress load_address = 31;
+    KeepAlive keep_alive = 32;
+    Unborrow unborrow = 33;
+    GetElement get_element = 34;
+    SetMem set_mem = 35;
+  }
+}
+
+message IncRef {
+  Value src = 1;
+}
+
+message DecRef {
+  Value src = 1;
+  bool is_xdec = 2;
+}
+
+message Call {
+  FuncDecl fn = 1;
+  repeated Value args = 2;
+  RType type = 3;
+}
+
+message MethodCall {
+  Value obj = 1;
+  string method = 2;
+  repeated Value args = 3;
+  RType receiver_type = 4;
+  RType type = 5;
+}
+
+message PrimitiveOp {
+  repeated Value args = 1;
+  RType type = 2;
+  PrimitiveDescription desc = 3;
+}
+
+message LoadErrorValue {
+  RType type = 1;
+  bool is_borrowed = 2;
+  bool undefines = 3;
+}
+
+message LoadLiteral {
+  LiteralValue value = 1;
+  RType type = 2;
+}
+
+message GetAttr {
+  Value obj = 1;
+  string attr = 2;
+  bool allow_error_value = 3;
+  RType class_type = 4;
+  bool is_borrowed = 5;
+}
+
+message SetAttr {
+  Value obj = 1;
+  string attr = 2;
+  Value src = 3;
+  RType class_type = 4;
+  RType type = 5;
+  bool is_init = 6;
+}
+
+message LoadStatic {
+  string identifier = 1;
+  string module_name = 2;
+  string namespace = 3;
+  RType type = 4;
+  bytes ann = 5;
+}
+
+message InitStatic {
+  string identifier = 1;
+  string module_name = 2;
+  string namespace = 3;
+  Value value = 4;
+}
+
+message TupleSet {
+  repeated Value items = 1;
+  RTuple tuple_type = 2;
+  RType type = 3;
+}
+
+message TupleGet {
+  Value src = 1;
+  int32 index = 2;
+  RType type = 3;
+  bool is_borrowed = 4;
+}
+
+message Cast {
+  Value src = 1;
+  RType type = 2;
+  bool is_borrowed = 3;
+  bool is_unchecked = 4;
+}
+
+message Box {
+  Value src = 1;
+  RType type = 2;
+  bool is_borrowed = 3;
+}
+
+message Unbox {
+  Value src = 1;
+  RType type = 2;
+}
+
+message RaiseStandardError {
+  string class_name = 1;
+  oneof value_type {
+    string str_value = 2;
+    Value value = 3;
+  }
+  RPrimitive type = 4;
+}
+
+message CallC {
+  string function_name = 1;
+  repeated Value args = 2;
+  RType type = 3;
+  StealsDescription steals = 4;
+  bool is_borrowed = 5;
+  int32 var_arg_idx = 6;
+  bool is_pure = 7;
+  bool returns_null = 8;
+  repeated Dependency dependencies = 9;
+}
+
+message Truncate {
+  Value src = 1;
+  RType type = 2;
+  RType src_type = 3;
+}
+
+message Extend {
+  Value src = 1;
+  RType type = 2;
+  RType src_type = 3;
+  bool signed = 4;
+}
+
+message LoadGlobal {
+  string identifier = 1;
+  RType type = 2;
+  bytes ann = 3;
+}
+
+message IntOp {
+  RType type = 1;
+  Value lhs = 2;
+  Value rhs = 3;
+  enum OpType {
+    ADD = 0;
+    SUB = 1;
+    MUL = 2;
+    DIV = 3;
+    MOD = 4;
+    AND = 200;
+    OR = 201;
+    XOR = 202;
+    LEFT_SHIFT = 203;
+    RIGHT_SHIFT = 204;
+  }
+  OpType op = 4;
+}
+
+message ComparisonOp {
+  RType type = 1;
+  Value lhs = 2;
+  Value rhs = 3;
+  enum OpType {
+    Default = 0;
+    EQ = 100;
+    NEQ = 101;
+    SLT = 102;
+    SGT = 103;
+    SLE = 104;
+    SGE = 105;
+    ULT = 106;
+    UGT = 107;
+    ULE = 108;
+    UGE = 109;
+  }
+  OpType op = 4;
+}
+
+message FloatOp {
+  RType type = 1;
+  Value lhs = 2;
+  Value rhs = 3;
+  enum OpType {
+    ADD = 0;
+    SUB = 1;
+    MUL = 2;
+    DIV = 3;
+    MOD = 4;
+  }
+  OpType op = 4;
+}
+
+message FloatNeg {
+  RType type = 1;
+  Value src = 2;
+}
+
+message FloatComparisonOp {
+  RType type = 1;
+  Value lhs = 2;
+  Value rhs = 3;
+  enum OpType {
+    Default = 0;
+    EQ = 200;
+    NEQ = 201;
+    LT = 202;
+    GT = 203;
+    LE = 204;
+    GE = 205;
+  }
+  OpType op = 4;
+}
+
+message LoadMem {
+  RType type = 1;
+  Value src = 2;
+  bool is_borrowed = 3;
+}
+
+message GetElement {
+  RType type = 1;
+  Value src = 2;
+  RType src_type = 3;
+  string field = 4;
+  bool is_borrowed = 5;
+}
+
+message SetMem {
+  RVoid type = 1;
+  RType dest_type = 2;
+  Value src = 3;
+  Value dest = 4;
+}
+
+message GetElementPtr {
+  RVoid type = 1;
+  Value src = 2;
+  RPrimitive src_type = 3;
+  string field = 4;
+}
+
+message SetElement {
+  RVoid type = 1;
+  Value src = 2;
+  Value item = 3;
+  string field = 4;
+}
+
+message LoadAddress {
+  RVoid type = 1;
+  oneof src_type {
+    string str_src = 2;
+    Register reg_src = 3;
+    LoadStatic static_src = 4;
+  }
+}
+
+message KeepAlive {
+  repeated Value src = 1;
+  bool steal = 2;
+}
+
+message Unborrow {
+  Value src = 1;
+  RVoid type = 2;
+}
+
+message PrimitiveDescription {
+  string name = 1;
+  repeated RType arg_types = 2;
+  RType return_type = 3;
+  RType var_arg_type = 4;
+  RType truncated_type = 5;
+  string c_function_name = 6;
+  Error_kind error_kind = 7;
+  StealsDescription steals = 8;
+  bool is_borrowed = 9;
+  repeated int32 ordering = 10;
+  repeated ExtraIntConstant extra_int_constants = 11;
+  int32 priority = 12;
+  bool is_pure = 13;
+  bool experimental = 14;
+  repeated Dependency dependencies = 15;
+  bool is_ambiguous = 16;
+}
+
+message ExtraIntConstant {
+  int32 value = 1;
+  RType type = 2;
+}
+
+message StealsDescription {
+  oneof description {
+    bool all = 1;
+    StealsList list = 2;
+  }
+}
+
+message StealsList {
+  repeated bool steals = 1;
+}
+
+message Capsula {
+  string name = 1;
+}
+
+message SourceDep {
+  string path = 1;
+}
+
+message Dependency {
+  oneof dependency_oneof {
+    Capsula capsula = 1;
+    SourceDep source_dep = 2;
+  }
+}
+
+message RuntimeArg {
+  string name = 1;
+  RType type = 2;
+  int32 kind = 3;
+  bool pos_only = 4;
+}
+
+message FuncSignature {
+  repeated RType args = 1;
+  RType ret_type = 2;
+  int32 num_bitmap_args = 3;
+  repeated RuntimeArg runtime_args = 4;
+}
+
+enum FunctionKind {
+  FUNC_UNSPECIFIED = 0;
+  FUNC_NORMAL = 1;
+  FUNC_STATICMETHOD = 2;
+  FUNC_CLASSMETHOD = 3;
+  FUNC_PROPERTY_GETTER = 4;
+  FUNC_PROPERTY_SETTER = 5;
+}
+
+message FuncDecl {
+  string name = 1;
+  optional string class_name = 2;
+  string module_name = 3;
+  FuncSignature sig = 4;
+  FunctionKind kind = 5;
+  bool is_prop_setter = 6;
+  bool is_prop_getter = 7;
+  bool is_generator = 8;
+  bool is_coroutine = 9;
+  FuncSignature bound_sig = 10;
+  bool implicit = 11;
+  bool internal = 12;
+  optional int32 line = 13;
+}
+
+message LiteralValue {
+  oneof value_type {
+    int64 int_value = 1;
+    string str_value = 2;
+    bool bool_value = 3;
+    double float_value = 4;
+  }
+}
+
+message RType {
+  string name = 1;
+  bool is_unboxed = 2;
+  string c_undefined = 3;
+  bool is_refcounted = 4;
+  string ctype = 5;
+  bool error_overlap = 6;
+  oneof type_kind {
+    RVoid rvoid = 8;
+    RPrimitive rprimitive = 9;
+    RTuple rtuple = 10;
+    RStruct rstruct = 11;
+    RInstance rinstance = 12;
+    RUnion runion = 13;
+    RArray rarray = 14;
+  }
+}
+
+message RVoid {
+}
+
+message RPrimitive {
+  bool is_native_int = 1;
+  bool is_signed = 2;
+  int32 size = 3;
+  bool may_be_immortal = 4;
+}
+
+message RTuple {
+  repeated RType types = 1;
+  string unique_id = 2;
+  string struct_name = 3;
+}
+
+message RStruct {
+  repeated string names = 1;
+  repeated RType types = 2;
+  repeated int32 offsets = 3;
+  int32 size = 4;
+}
+
+message RInstance {
+  Class class_ir = 1;
+}
+
+message RUnion {
+  repeated RType items = 1;
+  repeated RType items_set  = 2;
+}
+
+message RArray {
+  RType item_type = 1;
+  int32 length = 2;
+}

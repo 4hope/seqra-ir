@@ -16,7 +16,7 @@ repositories {
 }
 
 dependencies {
-    implementation("org.seqra:seqra-common-build:${rootProperties.getProperty("seqraBuildVersion")}")
+//    implementation("org.seqra:seqra-common-build:${rootProperties.getProperty("seqraBuildVersion")}")
     implementation("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
 }
 

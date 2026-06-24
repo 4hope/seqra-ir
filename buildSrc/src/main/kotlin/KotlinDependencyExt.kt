@@ -1,7 +1,6 @@
 import org.gradle.plugin.use.PluginDependenciesSpec
 import org.seqra.common.KotlinDependency
 import org.seqra.common.dep
-import org.seqra.common.id
 
 object KotlinDependencyExt {
     object Libs {
@@ -13,4 +12,6 @@ object KotlinDependencyExt {
     }
 }
 
-fun PluginDependenciesSpec.kotlinSerialization() = id(KotlinDependency.Plugins.KotlinSerialization)
+fun PluginDependenciesSpec.kotlinSerialization() =
+    id(KotlinDependency.Plugins.KotlinSerialization)
+        .version(KotlinDependency.Versions.kotlin)
