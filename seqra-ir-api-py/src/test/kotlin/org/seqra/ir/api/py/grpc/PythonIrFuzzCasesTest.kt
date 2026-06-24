@@ -189,6 +189,60 @@ class PythonIrFuzzCasesTest {
         )
     }
 
+    @Test
+    fun `pipeline emits compilable python for a small real project`() {
+        val caseRoot = generatedRootDir.resolve("real_small_project")
+        caseRoot.toFile().deleteRecursively()
+        caseRoot.createDirectories()
+
+        val fixtureRoot = fixtureSourcesDir.resolve("real_small_project")
+        val initFile = stageFixture(fixtureRoot.resolve("pkg").resolve("__init__.py"), caseRoot.resolve("pkg").resolve("__init__.py"))
+        val modelsFile = stageFixture(fixtureRoot.resolve("pkg").resolve("models.py"), caseRoot.resolve("pkg").resolve("models.py"))
+        val pipelineFile = stageFixture(fixtureRoot.resolve("pkg").resolve("pipeline.py"), caseRoot.resolve("pkg").resolve("pipeline.py"))
+        val mainFile = stageFixture(fixtureRoot.resolve("main.py"), caseRoot.resolve("main.py"))
+
+        val outputDir = caseRoot.resolve("generated")
+        outputDir.toFile().deleteRecursively()
+        outputDir.createDirectories()
+
+        val result = runBlocking {
+            runPythonIrPipeline(
+                sourceFiles = listOf(
+                    toWslPath(mainFile),
+                    toWslPath(pipelineFile),
+                    toWslPath(modelsFile),
+                    toWslPath(initFile)
+                ),
+                outputDir = outputDir.toFile(),
+                host = serverHost
+            )
+        }
+
+        assertTrue(result.success, buildFailureMessage("Pipeline failed", result.errors))
+        assertEquals(4, result.moduleCount, "Expected package, model, pipeline, and entry modules")
+
+        val generatedMain = outputDir.resolve("main_generated.py")
+        val generatedPkg = outputDir.resolve("pkg_generated.py")
+        val generatedModels = outputDir.resolve("pkg").resolve("models_generated.py")
+        val generatedPipeline = outputDir.resolve("pkg").resolve("pipeline_generated.py")
+
+        assertTrue(generatedMain.exists(), "Missing generated entry module")
+        assertTrue(generatedPkg.exists(), "Missing generated package module")
+        assertTrue(generatedModels.exists(), "Missing generated models module")
+        assertTrue(generatedPipeline.exists(), "Missing generated pipeline module")
+
+        runCommand(
+            listOf(
+                "py", "-3.12", "-m", "py_compile",
+                generatedPkg.pathString,
+                generatedModels.pathString,
+                generatedPipeline.pathString,
+                generatedMain.pathString
+            ),
+            "Python syntax check failed for real small project"
+        )
+    }
+
     private fun runCommand(command: List<String>, errorMessage: String) {
         val process = ProcessBuilder(command)
             .directory(repoRoot.toFile())
